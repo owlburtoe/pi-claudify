@@ -34,6 +34,7 @@ Set in `.pi/settings.json` or `~/.pi/settings.json`:
   "diffCollapsedLines": 24,
   "themeAdaptive": true,
   "diffTheme": "github-dark",
+  "spinnerColor": "borderAccent",
   "spinnerVerbs": ["Reviewing", "Polishing"],
   "spinnerVerbMode": "append"
 }
@@ -51,7 +52,7 @@ When `themeAdaptive` is `true` (default), the following colors are derived from 
 | Thinking-block italic gray | `muted` |
 | Diff add/remove accents | `toolDiffAdded` / `toolDiffRemoved` |
 | Diff background tints | mixed against `toolSuccessBg` base |
-| Spinner verb text (`Working…`) | `borderAccent` (fallback: `accent`) |
+| Spinner glyph + verb text (`✻ Working…`) | `borderAccent` (fallback: `accent`) |
 | Spinner status text | `muted` |
 
 User-supplied `diffTheme` presets and `diffColors` overrides always win over theme-derived defaults. File-type icons (e.g. `ts`, `py`, `rs`) keep their language-identity colors and are not theme-derived.
@@ -72,13 +73,14 @@ The selection is persisted to `~/.pi/settings.json` and applied to the next rend
 
 #### Repaint the spinner with `/cc-spinner`
 
-The spinner glyph itself is still colored by pi's loader using `accent`, while the verb text (e.g. `Cooking…`) follows `borderAccent` by default so it stays lively without being the exact same color as the glyph. The status suffix (e.g. `(thinking · ↓ 10 tokens · 2s)`) follows `muted`. Use `/cc-spinner` to bind either text element to any other theme color key:
+The spinner glyph and verb text (e.g. `✻ Cooking…`) share `borderAccent` by default so the working indicator reads as one unit. The status suffix (e.g. `(thinking · ↓ 10 tokens · 2s)`) follows `muted`. Use `/cc-spinner` to bind either text element to any other theme color key:
 
 ```text
 /cc-spinner preview                  # list every common theme key with a colored sample
-/cc-spinner verb <key>               # change the verb color (e.g. thinkingHigh, mdHeading)
+/cc-spinner color <key>              # change glyph + verb color together (e.g. thinkingHigh)
+/cc-spinner verb <key>               # alias for color, kept for older muscle memory
 /cc-spinner status <key>             # change the status suffix color
-/cc-spinner reset                    # restore color defaults (verb=borderAccent, status=muted)
+/cc-spinner reset                    # restore color defaults (spinner=borderAccent, status=muted)
 /cc-spinner verbs list               # show custom spinner verbs and append/replace mode
 /cc-spinner verbs add Reviewing      # add a custom verb or phrase
 /cc-spinner verbs remove Reviewing   # remove a custom verb or phrase
@@ -87,7 +89,7 @@ The spinner glyph itself is still colored by pi's loader using `accent`, while t
 /cc-spinner verbs reset              # remove user custom verbs and mode
 ```
 
-Color selections are persisted as `spinnerVerbColor` / `spinnerStatusColor` in `~/.pi/settings.json` and applied on the next spinner tick. Custom verbs are persisted as `spinnerVerbs` and `spinnerVerbMode`; they are picked at the next turn start. `/cc-spinner verbs ...` writes user settings in `~/.pi/settings.json`; project-level custom verbs can be set manually in `.pi/settings.json`. When both project and user spinner settings exist, the spinner reader applies project settings first and user settings second.
+Color selections are persisted as `spinnerColor` / `spinnerStatusColor` in `~/.pi/settings.json` and applied on the next spinner tick. Older `spinnerVerbColor` settings still work as a backward-compatible alias. Custom verbs are persisted as `spinnerVerbs` and `spinnerVerbMode`; they are picked at the next turn start. `/cc-spinner verbs ...` writes user settings in `~/.pi/settings.json`; project-level custom verbs can be set manually in `.pi/settings.json`. When both project and user spinner settings exist, the spinner reader applies project settings first and user settings second.
 
 ### Tool background modes
 

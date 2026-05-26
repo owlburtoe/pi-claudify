@@ -12,6 +12,7 @@
   "themeAdaptive": true,
   "diffTheme": "github-dark",
   "diffColors": {},
+  "spinnerColor": "borderAccent",
   "spinnerVerbs": ["Reviewing", "Polishing"],
   "spinnerVerbMode": "append"
 }

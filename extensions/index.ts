@@ -86,12 +86,12 @@ interface SettingsFile {
 	 */
 	themeAdaptive?: boolean;
 	/**
-	 * Theme color key used for the spinner verb (e.g. "Cooking…"). Defaults
-	 * to "accent". Useful when the active theme's accent is overloaded for
-	 * borders, headings, or bash mode and the verb should pop differently.
-	 * Valid keys are any of the pi theme `ThemeColor` names (e.g. accent,
-	 * borderAccent, success, warning, mdHeading, thinkingMedium, bashMode).
+	 * Theme color key used for the spinner glyph and verb text (e.g. "✻ Cooking…").
+	 * Defaults to "borderAccent". Valid keys are any of the pi theme `ThemeColor`
+	 * names (e.g. accent, borderAccent, success, warning, mdHeading, thinkingMedium, bashMode).
 	 */
+	spinnerColor?: string;
+	/** Backward-compatible alias for spinnerColor from earlier releases. */
 	spinnerVerbColor?: string;
 	/**
 	 * Theme color key used for the spinner status suffix (the parenthesized
@@ -3663,9 +3663,9 @@ export default function (pi: ExtensionAPI) {
 				const state = current ? "on" : "off";
 				if (raw === "status" && current) {
 					const settings = readMergedSettings();
-					const verbKey = settings.spinnerVerbColor || "borderAccent";
+					const spinnerKey = settings.spinnerColor || settings.spinnerVerbColor || "borderAccent";
 					const statusKey = settings.spinnerStatusColor || "muted";
-					const verbAnsi = safeFgAnsi(theme, verbKey) ?? safeFgAnsi(theme, "accent");
+					const spinnerAnsi = safeFgAnsi(theme, spinnerKey) ?? safeFgAnsi(theme, "accent");
 					const statusAnsi = safeFgAnsi(theme, statusKey) ?? safeFgAnsi(theme, "muted");
 					// Print a short preview of what we derived.
 					const preview = [
@@ -3674,7 +3674,7 @@ export default function (pi: ExtensionAPI) {
 						`muted text  : ${safeFgAnsi(theme, "muted") ? `${safeFgAnsi(theme, "muted")}example dim text\x1b[39m` : "(unchanged)"}`,
 						`diff add    : ${safeFgAnsi(theme, "toolDiffAdded") ? `${safeFgAnsi(theme, "toolDiffAdded")}+ added line\x1b[39m` : "(unchanged)"}`,
 						`diff del    : ${safeFgAnsi(theme, "toolDiffRemoved") ? `${safeFgAnsi(theme, "toolDiffRemoved")}- removed line\x1b[39m` : "(unchanged)"}`,
-						`spinner verb: ${verbAnsi ? `${verbAnsi}Cooking…\x1b[39m` : "(unchanged)"} (key: ${verbKey})`,
+						`spinner     : ${spinnerAnsi ? `${spinnerAnsi}✻ Cooking…\x1b[39m` : "(unchanged)"} (key: ${spinnerKey})`,
 						`spinner stat: ${statusAnsi ? `${statusAnsi}(thinking · ↓ 10 tokens · 2s)\x1b[39m` : "(unchanged)"} (key: ${statusKey})`,
 					].join("\n  ");
 					ctx.ui.notify(`Theme adaptive: ${state} (theme "${themeName}")\n  ${preview}`, "info");
@@ -3711,8 +3711,8 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
-	// /cc-spinner command — pick which theme color keys drive the spinner verb
-	// and status suffix.
+	// /cc-spinner command — pick which theme color keys drive the spinner glyph,
+	// verb text, and status suffix.
 	const COMMON_COLOR_KEYS: readonly string[] = [
 		"accent", "borderAccent", "success", "error", "warning",
 		"muted", "dim", "text", "thinkingText",
@@ -3724,7 +3724,7 @@ export default function (pi: ExtensionAPI) {
 	pi.registerCommand("cc-spinner", {
 		description: "Set spinner colors or manage custom spinner verbs",
 		getArgumentCompletions(prefix: string) {
-			const subCommands = ["verb", "verbs", "status", "reset", "preview"];
+			const subCommands = ["color", "verb", "verbs", "status", "reset", "preview"];
 			const parts = prefix.split(/\s+/);
 			if (parts.length <= 1) {
 				return subCommands
@@ -3733,15 +3733,16 @@ export default function (pi: ExtensionAPI) {
 						value: c,
 						label: c,
 						description:
-							c === "verb" ? "Set the color key used for the spinner verb text (e.g. 'Cooking…')"
+							c === "color" ? "Set one color key for both spinner glyph and verb text"
+							: c === "verb" ? "Alias for color; kept for older muscle memory"
 							: c === "verbs" ? "List, add, remove, reset, or set mode for custom spinner verbs"
 							: c === "status" ? "Set the color key used for the spinner status suffix"
-							: c === "reset" ? "Reset spinner colors to defaults (borderAccent, muted)"
+							: c === "reset" ? "Reset spinner colors to defaults (spinner=borderAccent, status=muted)"
 							: "Preview every theme color key with its current sample",
 					}));
 			}
-			// Second arg: color key completions for verb/status.
-			if (parts[0] === "verb" || parts[0] === "status") {
+			// Second arg: color key completions for color/verb/status.
+			if (parts[0] === "color" || parts[0] === "verb" || parts[0] === "status") {
 				const keyPrefix = (parts[1] ?? "").toLowerCase();
 				return COMMON_COLOR_KEYS
 					.filter((k) => k.toLowerCase().startsWith(keyPrefix))
@@ -3779,7 +3780,7 @@ export default function (pi: ExtensionAPI) {
 			const sub = (parts[0] ?? "").toLowerCase();
 			const theme = ctx.hasUI ? (ctx.ui.theme as any) : null;
 			const settings = readMergedSettings();
-			const currentVerb = settings.spinnerVerbColor || "borderAccent";
+			const currentSpinner = settings.spinnerColor || settings.spinnerVerbColor || "borderAccent";
 			const currentStatus = settings.spinnerStatusColor || "muted";
 			const customVerbs = sanitizeSpinnerVerbs(settings.spinnerVerbs);
 			const customVerbMode = getSpinnerVerbMode(settings);
@@ -3787,18 +3788,18 @@ export default function (pi: ExtensionAPI) {
 			if (!sub || sub === "preview") {
 				if (!ctx.hasUI) return;
 				if (!theme) {
-					ctx.ui.notify(`Spinner verb color: ${currentVerb}, status: ${currentStatus}; custom verbs: ${customVerbs.length} (${customVerbMode}) (no theme)`, "info");
+					ctx.ui.notify(`Spinner color: ${currentSpinner}, status: ${currentStatus}; custom verbs: ${customVerbs.length} (${customVerbMode}) (no theme)`, "info");
 					return;
 				}
 				const lines: string[] = [
-					`Current: verbColor=${currentVerb}, status=${currentStatus}, customVerbs=${customVerbs.length}, mode=${customVerbMode}`,
+					`Current: spinnerColor=${currentSpinner}, status=${currentStatus}, customVerbs=${customVerbs.length}, mode=${customVerbMode}`,
 					"",
-					"Preview of common theme keys (pick one for verb or status):",
+					"Preview of common theme keys (pick one for spinner or status):",
 				];
 				for (const key of COMMON_COLOR_KEYS) {
 					const ansi = safeFgAnsi(theme, key);
-					const marker = key === currentVerb ? "(verb color)" : key === currentStatus ? "(status)" : "";
-					const sample = ansi ? `${ansi}Cooking…\x1b[39m` : "(unmapped)";
+					const marker = key === currentSpinner ? "(spinner)" : key === currentStatus ? "(status)" : "";
+					const sample = ansi ? `${ansi}✻ Cooking…\x1b[39m` : "(unmapped)";
 					lines.push(`  ${key.padEnd(16)} ${sample} ${marker}`);
 				}
 				ctx.ui.notify(lines.join("\n"), "info");
@@ -3881,15 +3882,16 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			if (sub === "reset") {
+				writeSettingsKey("spinnerColor", undefined);
 				writeSettingsKey("spinnerVerbColor", undefined);
 				writeSettingsKey("spinnerStatusColor", undefined);
 				bustSpinnerSettingsCache();
-				if (ctx.hasUI) ctx.ui.notify("Spinner colors reset to defaults (verb=borderAccent, status=muted)", "info");
+				if (ctx.hasUI) ctx.ui.notify("Spinner colors reset to defaults (spinner=borderAccent, status=muted)", "info");
 				return;
 			}
 
-			if (sub !== "verb" && sub !== "status") {
-				if (ctx.hasUI) ctx.ui.notify(`Usage: /cc-spinner verb <key> | status <key> | reset | preview | verbs list|add|remove|reset|mode`, "error");
+			if (sub !== "color" && sub !== "verb" && sub !== "status") {
+				if (ctx.hasUI) ctx.ui.notify(`Usage: /cc-spinner color <key> | status <key> | reset | preview | verbs list|add|remove|reset|mode`, "error");
 				return;
 			}
 
@@ -3902,12 +3904,17 @@ export default function (pi: ExtensionAPI) {
 			// Validate the key resolves to *some* color in the active theme;
 			// accept anyway if the user insists so themes with custom keys work.
 			const ansi = theme ? safeFgAnsi(theme, key) : null;
-			const settingKey = sub === "verb" ? "spinnerVerbColor" : "spinnerStatusColor";
-			writeSettingsKey(settingKey, key);
+			if (sub === "status") {
+				writeSettingsKey("spinnerStatusColor", key);
+			} else {
+				writeSettingsKey("spinnerColor", key);
+				writeSettingsKey("spinnerVerbColor", undefined);
+			}
 			bustSpinnerSettingsCache();
 			if (ctx.hasUI) {
 				const sample = ansi ? `${ansi}sample\x1b[39m` : "(key unmapped in current theme)";
-				ctx.ui.notify(`Spinner ${sub} color → ${key} ${sample}`, "info");
+				const target = sub === "status" ? "status" : "glyph+verb";
+				ctx.ui.notify(`Spinner ${target} color → ${key} ${sample}`, "info");
 			}
 		},
 	});

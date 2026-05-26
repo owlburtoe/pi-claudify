@@ -90,9 +90,8 @@ function readSpinnerSettings(): SpinnerSettings {
 		return _spinnerSettingsCache.value;
 	}
 	let adaptive = true;
-	// Spinner glyph is still pi's accent. Use borderAccent for the verb so it
-	// feels themed and lively without collapsing into the exact same Claude
-	// orange as the glyph on themes like openAntigravity-dark.
+	// Spinner glyph and verb share one theme color so they read as a single
+	// working indicator. `spinnerVerbColor` is still accepted for older config.
 	let verbColor = "borderAccent";
 	let statusColor = "muted";
 	let customVerbs: string[] | null = null;
@@ -105,6 +104,7 @@ function readSpinnerSettings(): SpinnerSettings {
 			if (raw && typeof raw === "object") {
 				if (raw.themeAdaptive === false) adaptive = false;
 				if (typeof raw.spinnerVerbColor === "string" && raw.spinnerVerbColor.length > 0) verbColor = raw.spinnerVerbColor;
+				if (typeof raw.spinnerColor === "string" && raw.spinnerColor.length > 0) verbColor = raw.spinnerColor;
 				if (typeof raw.spinnerStatusColor === "string" && raw.spinnerStatusColor.length > 0) statusColor = raw.spinnerStatusColor;
 				if (raw.spinnerVerbMode === "append" || raw.spinnerVerbMode === "replace") verbMode = raw.spinnerVerbMode;
 				if (Array.isArray(raw.spinnerVerbs)) customVerbs = sanitizeSpinnerVerbs(raw.spinnerVerbs);
@@ -197,11 +197,12 @@ function unrefTimer(timer: ReturnType<typeof setTimeout> | null | undefined): vo
 }
 
 (Loader.prototype as any).updateDisplay = function patchedUpdateDisplay() {
+	applyThemeColors(this.ui?.theme);
 	const frame = OB_FRAMES[this.currentFrame % OB_FRAMES.length];
 	const message = typeof this.message === "string" && RAW_ANSI_RE.test(this.message)
 		? this.message
 		: this.messageColorFn(this.message);
-	const nextText = `${this.spinnerColorFn(frame)} ${message}`;
+	const nextText = `${CLAUDE_ORANGE}${frame}${RESET} ${message}`;
 	if ((this as any)[LOADER_LAST_TEXT] === nextText) return;
 	(this as any)[LOADER_LAST_TEXT] = nextText;
 	this.setText(nextText);
@@ -564,9 +565,9 @@ export default function (pi: ExtensionAPI) {
 
 	function syncWorkingMessage(force = false): void {
 		if (!activeCtx?.hasUI) return;
-		// Re-derive colors on every tick so /cc-spinner verb/status changes
+		// Re-derive colors on every tick so /cc-spinner color/status changes
 		// take effect within ~250 ms without waiting for the next pi event.
-		// applyThemeColors is identity-cached on (theme, verbKey, statusKey) so
+		// applyThemeColors is identity-cached on (theme, spinnerKey, statusKey) so
 		// this is cheap when nothing changed.
 		applyThemeColors(activeCtx.ui?.theme);
 		const nextMessage = buildWorkingMessage();
