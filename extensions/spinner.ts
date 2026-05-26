@@ -20,14 +20,66 @@ let STATUS_DIM = "\x1b[38;2;153;153;153m";
 
 // Short TTL so /cc-spinner changes are picked up within ~1s without
 // re-reading the file on every 250ms spinner tick.
-let _spinnerSettingsCache: { value: { adaptive: boolean; verbColor: string; statusColor: string }; expires: number } | null = null;
+type SpinnerVerbMode = "append" | "replace";
+interface SpinnerSettings {
+	adaptive: boolean;
+	verbColor: string;
+	statusColor: string;
+	verbs: readonly string[];
+}
+
+let _spinnerSettingsCache: { value: SpinnerSettings; expires: number } | null = null;
 const SPINNER_SETTINGS_TTL_MS = 1_000;
+const MAX_CUSTOM_SPINNER_VERBS = 200;
+const MAX_SPINNER_VERB_LENGTH = 48;
+const ANSI_ESCAPE_SEQUENCE_RE = /\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1B\\))/g;
+const CONTROL_CHARS_RE = /[\u0000-\u001F\u007F-\u009F]/g;
 // Cross-extension bust signal: /cc-spinner in index.ts bumps this counter
 // and we drop the cache when it changes.
 const SPINNER_BUST_KEY = Symbol.for("pi-claude-style-tools:spinner-settings-bust");
 let _spinnerLastBust = 0;
 
-function readSpinnerSettings(): { adaptive: boolean; verbColor: string; statusColor: string } {
+function sanitizeSpinnerVerb(value: unknown): string | null {
+	if (typeof value !== "string") return null;
+	const cleaned = value
+		.replace(ANSI_ESCAPE_SEQUENCE_RE, "")
+		.replace(CONTROL_CHARS_RE, "")
+		.trim();
+	if (!cleaned) return null;
+	return Array.from(cleaned).slice(0, MAX_SPINNER_VERB_LENGTH).join("");
+}
+
+function sanitizeSpinnerVerbs(value: unknown): string[] {
+	if (!Array.isArray(value)) return [];
+	const seen = new Set<string>();
+	const verbs: string[] = [];
+	for (const item of value) {
+		const verb = sanitizeSpinnerVerb(item);
+		if (!verb) continue;
+		const key = verb.toLocaleLowerCase();
+		if (seen.has(key)) continue;
+		seen.add(key);
+		verbs.push(verb);
+		if (verbs.length >= MAX_CUSTOM_SPINNER_VERBS) break;
+	}
+	return verbs;
+}
+
+function resolveSpinnerVerbs(customVerbs: readonly string[] | null, mode: SpinnerVerbMode): readonly string[] {
+	if (!customVerbs || customVerbs.length === 0) return DEFAULT_SPINNER_VERBS;
+	if (mode === "replace") return customVerbs;
+	const seen = new Set<string>();
+	const merged: string[] = [];
+	for (const verb of [...DEFAULT_SPINNER_VERBS, ...customVerbs]) {
+		const key = verb.toLocaleLowerCase();
+		if (seen.has(key)) continue;
+		seen.add(key);
+		merged.push(verb);
+	}
+	return merged.length > 0 ? merged : DEFAULT_SPINNER_VERBS;
+}
+
+function readSpinnerSettings(): SpinnerSettings {
 	const now = Date.now();
 	const bust = ((globalThis as any)[SPINNER_BUST_KEY] as number | undefined) ?? 0;
 	if (bust !== _spinnerLastBust) {
@@ -43,6 +95,8 @@ function readSpinnerSettings(): { adaptive: boolean; verbColor: string; statusCo
 	// orange as the glyph on themes like openAntigravity-dark.
 	let verbColor = "borderAccent";
 	let statusColor = "muted";
+	let customVerbs: string[] | null = null;
+	let verbMode: SpinnerVerbMode = "append";
 	const paths = [`${process.cwd()}/.pi/settings.json`, `${process.env.HOME ?? ""}/.pi/settings.json`];
 	for (const p of paths) {
 		try {
@@ -52,16 +106,14 @@ function readSpinnerSettings(): { adaptive: boolean; verbColor: string; statusCo
 				if (raw.themeAdaptive === false) adaptive = false;
 				if (typeof raw.spinnerVerbColor === "string" && raw.spinnerVerbColor.length > 0) verbColor = raw.spinnerVerbColor;
 				if (typeof raw.spinnerStatusColor === "string" && raw.spinnerStatusColor.length > 0) statusColor = raw.spinnerStatusColor;
+				if (raw.spinnerVerbMode === "append" || raw.spinnerVerbMode === "replace") verbMode = raw.spinnerVerbMode;
+				if (Array.isArray(raw.spinnerVerbs)) customVerbs = sanitizeSpinnerVerbs(raw.spinnerVerbs);
 			}
 		} catch { /* ignore */ }
 	}
-	const value = { adaptive, verbColor, statusColor };
+	const value: SpinnerSettings = { adaptive, verbColor, statusColor, verbs: resolveSpinnerVerbs(customVerbs, verbMode) };
 	_spinnerSettingsCache = { value, expires: now + SPINNER_SETTINGS_TTL_MS };
 	return value;
-}
-
-function themeAdaptiveEnabled(): boolean {
-	return readSpinnerSettings().adaptive;
 }
 
 // Original Claude-style values restored when the user turns adaptive off.
@@ -195,7 +247,7 @@ Loader.prototype.stop = function patchedStop() {
 // Spinner verbs — fun/whimsical loading messages (different set from OpenBrawd)
 // ---------------------------------------------------------------------------
 
-const SPINNER_VERBS = [
+const DEFAULT_SPINNER_VERBS = [
 	"Accomplishing",
 	"Actioning",
 	"Actualizing",
@@ -385,7 +437,8 @@ const SPINNER_VERBS = [
 // ---------------------------------------------------------------------------
 
 function pickVerb(): string {
-	return SPINNER_VERBS[Math.floor(Math.random() * SPINNER_VERBS.length)];
+	const verbs = readSpinnerSettings().verbs;
+	return verbs[Math.floor(Math.random() * verbs.length)] ?? DEFAULT_SPINNER_VERBS[0];
 }
 
 /** Format elapsed ms as compact duration: 5s, 1m 23s, 1h 2m 3s */

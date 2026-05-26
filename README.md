@@ -33,7 +33,9 @@ Set in `.pi/settings.json` or `~/.pi/settings.json`:
   "bashCollapsedLines": 10,
   "diffCollapsedLines": 24,
   "themeAdaptive": true,
-  "diffTheme": "github-dark"
+  "diffTheme": "github-dark",
+  "spinnerVerbs": ["Reviewing", "Polishing"],
+  "spinnerVerbMode": "append"
 }
 ```
 
@@ -73,13 +75,19 @@ The selection is persisted to `~/.pi/settings.json` and applied to the next rend
 The spinner glyph itself is still colored by pi's loader using `accent`, while the verb text (e.g. `Cooking…`) follows `borderAccent` by default so it stays lively without being the exact same color as the glyph. The status suffix (e.g. `(thinking · ↓ 10 tokens · 2s)`) follows `muted`. Use `/cc-spinner` to bind either text element to any other theme color key:
 
 ```text
-/cc-spinner preview          # list every common theme key with a colored sample
-/cc-spinner verb <key>       # change the verb color (e.g. thinkingHigh, mdHeading)
-/cc-spinner status <key>     # change the status suffix color
-/cc-spinner reset            # restore defaults (verb=borderAccent, status=muted)
+/cc-spinner preview                  # list every common theme key with a colored sample
+/cc-spinner verb <key>               # change the verb color (e.g. thinkingHigh, mdHeading)
+/cc-spinner status <key>             # change the status suffix color
+/cc-spinner reset                    # restore color defaults (verb=borderAccent, status=muted)
+/cc-spinner verbs list               # show custom spinner verbs and append/replace mode
+/cc-spinner verbs add Reviewing      # add a custom verb or phrase
+/cc-spinner verbs remove Reviewing   # remove a custom verb or phrase
+/cc-spinner verbs mode append        # append custom verbs to the defaults
+/cc-spinner verbs mode replace       # use only custom verbs, with safe fallback to defaults
+/cc-spinner verbs reset              # remove user custom verbs and mode
 ```
 
-The selection is persisted as `spinnerVerbColor` / `spinnerStatusColor` in `~/.pi/settings.json` and applied on the next spinner tick.
+Color selections are persisted as `spinnerVerbColor` / `spinnerStatusColor` in `~/.pi/settings.json` and applied on the next spinner tick. Custom verbs are persisted as `spinnerVerbs` and `spinnerVerbMode`; they are picked at the next turn start. `/cc-spinner verbs ...` writes user settings in `~/.pi/settings.json`; project-level custom verbs can be set manually in `.pi/settings.json`. When both project and user spinner settings exist, the spinner reader applies project settings first and user settings second.
 
 ### Tool background modes
 

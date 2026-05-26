@@ -63,6 +63,8 @@ const ITERM2_IMAGE_PREFIX = "\x1b]1337;File=";
 
 let toolBackgroundMode: "default" | "transparent" | "outlines" = "outlines";
 
+type SpinnerVerbMode = "append" | "replace";
+
 interface SettingsFile {
 	toolBackground?: "default" | "transparent" | "outlines" | "border";
 	readOutputMode?: "hidden" | "summary" | "preview";
@@ -96,6 +98,13 @@ interface SettingsFile {
 	 * "(thinking · ↓ 10 tokens · 2s)" trailer). Defaults to "muted".
 	 */
 	spinnerStatusColor?: string;
+	/**
+	 * Optional custom spinner verbs. These are appended to defaults unless
+	 * spinnerVerbMode is "replace". Values are sanitized before display.
+	 */
+	spinnerVerbs?: string[];
+	/** Whether custom spinnerVerbs append to or replace the default verb list. */
+	spinnerVerbMode?: SpinnerVerbMode;
 }
 
 let _settingsCache: { value: SettingsFile; timestamp: number } | null = null;
@@ -133,6 +142,56 @@ const SPINNER_BUST_KEY = Symbol.for("pi-claude-style-tools:spinner-settings-bust
 function bustSpinnerSettingsCache(): void {
 	const current = ((globalThis as any)[SPINNER_BUST_KEY] as number | undefined) ?? 0;
 	(globalThis as any)[SPINNER_BUST_KEY] = current + 1;
+}
+
+function readMergedSettings(): SettingsFile {
+	const paths = [`${process.cwd()}/.pi/settings.json`, `${process.env.HOME ?? ""}/.pi/settings.json`];
+	const merged: SettingsFile = {};
+	for (const path of paths) {
+		try {
+			if (!path || !existsSync(path)) continue;
+			const raw = JSON.parse(readFileSync(path, "utf8"));
+			if (raw && typeof raw === "object") Object.assign(merged, raw as SettingsFile);
+		} catch {
+			// ignore invalid settings files
+		}
+	}
+	return merged;
+}
+
+const MAX_CUSTOM_SPINNER_VERBS = 200;
+const MAX_SPINNER_VERB_LENGTH = 48;
+const ANSI_ESCAPE_SEQUENCE_RE = /\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1B\\))/g;
+const CONTROL_CHARS_RE = /[\u0000-\u001F\u007F-\u009F]/g;
+
+function sanitizeSpinnerVerb(value: unknown): string | null {
+	if (typeof value !== "string") return null;
+	const cleaned = value
+		.replace(ANSI_ESCAPE_SEQUENCE_RE, "")
+		.replace(CONTROL_CHARS_RE, "")
+		.trim();
+	if (!cleaned) return null;
+	return Array.from(cleaned).slice(0, MAX_SPINNER_VERB_LENGTH).join("");
+}
+
+function sanitizeSpinnerVerbs(value: unknown): string[] {
+	if (!Array.isArray(value)) return [];
+	const seen = new Set<string>();
+	const verbs: string[] = [];
+	for (const item of value) {
+		const verb = sanitizeSpinnerVerb(item);
+		if (!verb) continue;
+		const key = verb.toLocaleLowerCase();
+		if (seen.has(key)) continue;
+		seen.add(key);
+		verbs.push(verb);
+		if (verbs.length >= MAX_CUSTOM_SPINNER_VERBS) break;
+	}
+	return verbs;
+}
+
+function getSpinnerVerbMode(settings: SettingsFile): SpinnerVerbMode {
+	return settings.spinnerVerbMode === "replace" ? "replace" : "append";
 }
 
 function writeSettingsKey(key: string, value: unknown): void {
@@ -606,9 +665,10 @@ function patchUserMessageRender(): void {
 	if (typeof originalRender !== "function") return;
 	proto.render = function patchedUserMessageRender(width: number) {
 		for (const child of (this as any).children ?? []) {
-			if (child instanceof Markdown && child.defaultTextStyle?.bgColor) {
-				child.defaultTextStyle.bgColor = undefined;
-				child.invalidate?.();
+			const markdown = child as any;
+			if (child instanceof Markdown && markdown.defaultTextStyle?.bgColor) {
+				markdown.defaultTextStyle.bgColor = undefined;
+				markdown.invalidate?.();
 			}
 		}
 		const borderWidth = Math.max(1, width);
@@ -3602,7 +3662,7 @@ export default function (pi: ExtensionAPI) {
 				const themeName = theme?.name ?? "unknown";
 				const state = current ? "on" : "off";
 				if (raw === "status" && current) {
-					const settings = readSettings();
+					const settings = readMergedSettings();
 					const verbKey = settings.spinnerVerbColor || "borderAccent";
 					const statusKey = settings.spinnerStatusColor || "muted";
 					const verbAnsi = safeFgAnsi(theme, verbKey) ?? safeFgAnsi(theme, "accent");
@@ -3662,9 +3722,9 @@ export default function (pi: ExtensionAPI) {
 		"syntaxKeyword", "syntaxFunction", "syntaxString", "syntaxType",
 	];
 	pi.registerCommand("cc-spinner", {
-		description: "Set the spinner verb or status theme color, or preview current values",
-		getArgumentCompletions(prefix) {
-			const subCommands = ["verb", "status", "reset", "preview"];
+		description: "Set spinner colors or manage custom spinner verbs",
+		getArgumentCompletions(prefix: string) {
+			const subCommands = ["verb", "verbs", "status", "reset", "preview"];
 			const parts = prefix.split(/\s+/);
 			if (parts.length <= 1) {
 				return subCommands
@@ -3673,9 +3733,10 @@ export default function (pi: ExtensionAPI) {
 						value: c,
 						label: c,
 						description:
-							c === "verb" ? "Set the color key used for the spinner verb (e.g. 'Cooking…')"
+							c === "verb" ? "Set the color key used for the spinner verb text (e.g. 'Cooking…')"
+							: c === "verbs" ? "List, add, remove, reset, or set mode for custom spinner verbs"
 							: c === "status" ? "Set the color key used for the spinner status suffix"
-							: c === "reset" ? "Reset both verb and status to defaults (borderAccent, muted)"
+							: c === "reset" ? "Reset spinner colors to defaults (borderAccent, muted)"
 							: "Preview every theme color key with its current sample",
 					}));
 			}
@@ -3686,34 +3747,136 @@ export default function (pi: ExtensionAPI) {
 					.filter((k) => k.toLowerCase().startsWith(keyPrefix))
 					.map((k) => ({ value: k, label: k, description: `theme.fg("${k}", …)` }));
 			}
+			if (parts[0] === "verbs") {
+				const verbCommands = ["list", "add", "remove", "reset", "mode"];
+				if (parts.length <= 2) {
+					const actionPrefix = (parts[1] ?? "").toLowerCase();
+					return verbCommands
+						.filter((c) => c.startsWith(actionPrefix))
+						.map((c) => ({
+							value: `verbs ${c}`,
+							label: c,
+							description:
+								c === "list" ? "Show custom spinner verbs and mode"
+								: c === "add" ? "Add a custom spinner verb or phrase"
+								: c === "remove" ? "Remove a custom spinner verb or phrase"
+								: c === "reset" ? "Remove user custom spinner verbs"
+								: "Set append or replace mode",
+						}));
+				}
+				if (parts[1] === "mode") {
+					const modePrefix = (parts[2] ?? "").toLowerCase();
+					return ["append", "replace"]
+						.filter((m) => m.startsWith(modePrefix))
+						.map((m) => ({ value: `verbs mode ${m}`, label: m, description: `${m} custom verbs ${m === "append" ? "to" : "instead of"} defaults` }));
+				}
+			}
 			return [];
 		},
-		async handler(args, ctx) {
-			const parts = args.trim().split(/\s+/).filter((p) => p.length > 0);
+		async handler(args: string, ctx: any) {
+			const rawArgs = args.trim();
+			const parts = rawArgs.split(/\s+/).filter((p: string) => p.length > 0);
 			const sub = (parts[0] ?? "").toLowerCase();
 			const theme = ctx.hasUI ? (ctx.ui.theme as any) : null;
-			const settings = readSettings();
+			const settings = readMergedSettings();
 			const currentVerb = settings.spinnerVerbColor || "borderAccent";
 			const currentStatus = settings.spinnerStatusColor || "muted";
+			const customVerbs = sanitizeSpinnerVerbs(settings.spinnerVerbs);
+			const customVerbMode = getSpinnerVerbMode(settings);
 
 			if (!sub || sub === "preview") {
 				if (!ctx.hasUI) return;
 				if (!theme) {
-					ctx.ui.notify(`Spinner verb: ${currentVerb}, status: ${currentStatus} (no theme)`, "info");
+					ctx.ui.notify(`Spinner verb color: ${currentVerb}, status: ${currentStatus}; custom verbs: ${customVerbs.length} (${customVerbMode}) (no theme)`, "info");
 					return;
 				}
 				const lines: string[] = [
-					`Current: verb=${currentVerb}, status=${currentStatus}`,
+					`Current: verbColor=${currentVerb}, status=${currentStatus}, customVerbs=${customVerbs.length}, mode=${customVerbMode}`,
 					"",
 					"Preview of common theme keys (pick one for verb or status):",
 				];
 				for (const key of COMMON_COLOR_KEYS) {
 					const ansi = safeFgAnsi(theme, key);
-					const marker = key === currentVerb ? "(verb)" : key === currentStatus ? "(status)" : "";
+					const marker = key === currentVerb ? "(verb color)" : key === currentStatus ? "(status)" : "";
 					const sample = ansi ? `${ansi}Cooking…\x1b[39m` : "(unmapped)";
 					lines.push(`  ${key.padEnd(16)} ${sample} ${marker}`);
 				}
 				ctx.ui.notify(lines.join("\n"), "info");
+				return;
+			}
+
+			if (sub === "verbs") {
+				const action = (parts[1] ?? "list").toLowerCase();
+				if (action === "list") {
+					if (!ctx.hasUI) return;
+					const listed = customVerbs.length > 0 ? customVerbs.map((v) => `- ${v}`).join("\n") : "No custom spinner verbs configured.";
+					ctx.ui.notify(`Custom spinner verbs (${customVerbMode}, ${customVerbs.length})\n${listed}\n\nCommands write user settings in ~/.pi/settings.json; project settings can be set manually in .pi/settings.json.`, "info");
+					return;
+				}
+
+				if (action === "add") {
+					const verbArg = rawArgs.match(/^verbs\s+add(?:\s+(.+))?$/i)?.[1] ?? "";
+					const verb = sanitizeSpinnerVerb(verbArg);
+					if (!verb) {
+						if (ctx.hasUI) ctx.ui.notify("Usage: /cc-spinner verbs add <verb or phrase>", "error");
+						return;
+					}
+					const verbKey = verb.toLocaleLowerCase();
+					if (customVerbs.some((v) => v.toLocaleLowerCase() === verbKey)) {
+						if (ctx.hasUI) ctx.ui.notify(`Custom spinner verb already exists: ${verb}`, "info");
+						return;
+					}
+					if (customVerbs.length >= MAX_CUSTOM_SPINNER_VERBS) {
+						if (ctx.hasUI) ctx.ui.notify(`Custom spinner verb limit reached (${MAX_CUSTOM_SPINNER_VERBS})`, "error");
+						return;
+					}
+					const next = sanitizeSpinnerVerbs([...customVerbs, verb]);
+					writeSettingsKey("spinnerVerbs", next);
+					bustSpinnerSettingsCache();
+					if (ctx.hasUI) ctx.ui.notify(`Added custom spinner verb: ${verb}`, "info");
+					return;
+				}
+
+				if (action === "remove") {
+					const verbArg = rawArgs.match(/^verbs\s+remove(?:\s+(.+))?$/i)?.[1] ?? "";
+					const verb = sanitizeSpinnerVerb(verbArg);
+					if (!verb) {
+						if (ctx.hasUI) ctx.ui.notify("Usage: /cc-spinner verbs remove <verb or phrase>", "error");
+						return;
+					}
+					const removeKey = verb.toLocaleLowerCase();
+					const next = customVerbs.filter((v) => v.toLocaleLowerCase() !== removeKey);
+					if (next.length === customVerbs.length) {
+						if (ctx.hasUI) ctx.ui.notify(`Custom spinner verb not found: ${verb}`, "info");
+						return;
+					}
+					writeSettingsKey("spinnerVerbs", next.length > 0 ? next : undefined);
+					bustSpinnerSettingsCache();
+					if (ctx.hasUI) ctx.ui.notify(`Removed custom spinner verb: ${verb}`, "info");
+					return;
+				}
+
+				if (action === "reset") {
+					writeSettingsKey("spinnerVerbs", undefined);
+					writeSettingsKey("spinnerVerbMode", undefined);
+					bustSpinnerSettingsCache();
+					if (ctx.hasUI) ctx.ui.notify("User custom spinner verbs reset. Project .pi/settings.json custom verbs may still apply.", "info");
+					return;
+				}
+
+				if (action === "mode") {
+					const mode = (parts[2] ?? "").toLowerCase();
+					if (mode !== "append" && mode !== "replace") {
+						if (ctx.hasUI) ctx.ui.notify("Usage: /cc-spinner verbs mode append|replace", "error");
+						return;
+					}
+					writeSettingsKey("spinnerVerbMode", mode);
+					bustSpinnerSettingsCache();
+					if (ctx.hasUI) ctx.ui.notify(`Custom spinner verb mode → ${mode}`, "info");
+					return;
+				}
+
+				if (ctx.hasUI) ctx.ui.notify("Usage: /cc-spinner verbs list|add <verb>|remove <verb>|reset|mode append|replace", "error");
 				return;
 			}
 
@@ -3726,7 +3889,7 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			if (sub !== "verb" && sub !== "status") {
-				if (ctx.hasUI) ctx.ui.notify(`Usage: /cc-spinner verb <key> | status <key> | reset | preview`, "error");
+				if (ctx.hasUI) ctx.ui.notify(`Usage: /cc-spinner verb <key> | status <key> | reset | preview | verbs list|add|remove|reset|mode`, "error");
 				return;
 			}
 
@@ -3744,7 +3907,7 @@ export default function (pi: ExtensionAPI) {
 			bustSpinnerSettingsCache();
 			if (ctx.hasUI) {
 				const sample = ansi ? `${ansi}sample\x1b[39m` : "(key unmapped in current theme)";
-				ctx.ui.notify(`Spinner ${sub} → ${key} ${sample}`, "info");
+				ctx.ui.notify(`Spinner ${sub} color → ${key} ${sample}`, "info");
 			}
 		},
 	});
