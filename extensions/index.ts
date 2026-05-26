@@ -3743,10 +3743,11 @@ export default function (pi: ExtensionAPI) {
 			}
 			// Second arg: color key completions for color/verb/status.
 			if (parts[0] === "color" || parts[0] === "verb" || parts[0] === "status") {
+				const subCommand = parts[0];
 				const keyPrefix = (parts[1] ?? "").toLowerCase();
 				return COMMON_COLOR_KEYS
 					.filter((k) => k.toLowerCase().startsWith(keyPrefix))
-					.map((k) => ({ value: k, label: k, description: `theme.fg("${k}", …)` }));
+					.map((k) => ({ value: `${subCommand} ${k}`, label: k, description: `theme.fg("${k}", …)` }));
 			}
 			if (parts[0] === "verbs") {
 				const verbCommands = ["list", "add", "remove", "reset", "mode"];
