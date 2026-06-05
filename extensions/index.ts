@@ -41,6 +41,16 @@ import {
 import * as Diff from "diff";
 import type { BundledLanguage, BundledTheme } from "shiki";
 
+import {
+	DEFAULT_HIDDEN_THINKING_LABEL,
+	formatTranscriptLines,
+	resolveMessageChromeSettings,
+	sanitizeMessagePrefix,
+	type MessageChromeSettings,
+	type MessageSpacing,
+	type MessageStyle,
+} from "./message-chrome.ts";
+
 const RESET = "\x1b[0m";
 const TRANSPARENT_BG = "\x1b[49m";
 const TRANSPARENT_RESET = `${RESET}${TRANSPARENT_BG}`;
@@ -105,6 +115,20 @@ interface SettingsFile {
 	spinnerVerbs?: string[];
 	/** Whether custom spinnerVerbs append to or replace the default verb list. */
 	spinnerVerbMode?: SpinnerVerbMode;
+	/** Assistant/thinking transcript chrome style. "claude" trims spacing like Claude Code; "classic" keeps the older package rhythm. */
+	messageStyle?: MessageStyle;
+	/** Prefix glyph/text for assistant paragraphs. Defaults to Claude Code-style "●". */
+	assistantPrefix?: string;
+	/** Prefix glyph/text for visible thinking paragraphs. Defaults to "✻". */
+	thinkingPrefix?: string;
+	/** Blank-line normalization in assistant/thinking transcript blocks. */
+	messageSpacing?: MessageSpacing;
+	/** Whether the active working spinner may show a subordinate Claude-style tip line. */
+	workingTipEnabled?: boolean;
+	/** Custom subordinate tip line text for the active working spinner. */
+	workingTipText?: string;
+	/** Label shown when thinking blocks are hidden by the Pi UI. */
+	hiddenThinkingLabel?: string;
 }
 
 let _settingsCache: { value: SettingsFile; timestamp: number } | null = null;
@@ -144,7 +168,13 @@ function bustSpinnerSettingsCache(): void {
 	(globalThis as any)[SPINNER_BUST_KEY] = current + 1;
 }
 
+let _mergedSettingsCache: { value: SettingsFile; timestamp: number } | null = null;
+
 function readMergedSettings(): SettingsFile {
+	const now = Date.now();
+	if (_mergedSettingsCache && now - _mergedSettingsCache.timestamp < SETTINGS_CACHE_TTL_MS) {
+		return _mergedSettingsCache.value;
+	}
 	const paths = [`${process.cwd()}/.pi/settings.json`, `${process.env.HOME ?? ""}/.pi/settings.json`];
 	const merged: SettingsFile = {};
 	for (const path of paths) {
@@ -156,7 +186,18 @@ function readMergedSettings(): SettingsFile {
 			// ignore invalid settings files
 		}
 	}
+	_mergedSettingsCache = { value: merged, timestamp: now };
 	return merged;
+}
+
+function getMessageChromeSettings(): MessageChromeSettings {
+	return resolveMessageChromeSettings(readMergedSettings());
+}
+
+function applyHiddenThinkingLabel(ctx: any): void {
+	if (!ctx?.hasUI || typeof ctx.ui?.setHiddenThinkingLabel !== "function") return;
+	const label = getMessageChromeSettings().hiddenThinkingLabel;
+	ctx.ui.setHiddenThinkingLabel(label || DEFAULT_HIDDEN_THINKING_LABEL);
 }
 
 const MAX_CUSTOM_SPINNER_VERBS = 200;
@@ -196,6 +237,7 @@ function getSpinnerVerbMode(settings: SettingsFile): SpinnerVerbMode {
 
 function writeSettingsKey(key: string, value: unknown): void {
 	_settingsCache = null; // invalidate cache on write
+	_mergedSettingsCache = null;
 	const home = process.env.HOME ?? "";
 	if (!home) return;
 	const dir = `${home}/.pi`;
@@ -474,9 +516,43 @@ function appendWorkedDurationLine(message: any, durationMs: number): void {
 	lastText.text = `${text.trimEnd()}\n\n${inlineWorkedDurationText(durationMs)}`;
 }
 
+function messageChromeCacheKey(settings: MessageChromeSettings, kind: "assistant" | "thinking"): string {
+	return [
+		settings.messageStyle,
+		settings.messageSpacing,
+		kind === "assistant" ? settings.assistantPrefix : settings.thinkingPrefix,
+	].join(":");
+}
+
+function renderClassicPrefixedLines(lines: string[], prefix: string, normalizeChecks = true): string[] {
+	let prefixPlaced = false;
+	return lines.map((line: string) => {
+		const displayLine = normalizeChecks ? normalizeLeadingCheckGlyph(line) : line;
+		if (!prefixPlaced && stripAnsi(displayLine).trim()) {
+			prefixPlaced = true;
+			return ` ${prefix} ${displayLine}`;
+		}
+		return `   ${displayLine}`;
+	});
+}
+
+function colorFirstTranscriptPrefix(lines: string[], prefixGlyph: string, coloredPrefixGlyph: string): string[] {
+	const plainPrefix = ` ${prefixGlyph} `;
+	const coloredPrefix = ` ${coloredPrefixGlyph} `;
+	let replaced = false;
+	return lines.map((line) => {
+		if (!replaced && line.startsWith(plainPrefix)) {
+			replaced = true;
+			return `${coloredPrefix}${line.slice(plainPrefix.length)}`;
+		}
+		return line;
+	});
+}
+
 class DottedParagraph {
 	private md: InstanceType<typeof Markdown>;
 	private cachedWidth?: number;
+	private cachedChromeKey?: string;
 	private cachedLines?: string[];
 
 	constructor(text: string, markdownTheme: ConstructorParameters<typeof Markdown>[3]) {
@@ -485,31 +561,35 @@ class DottedParagraph {
 
 	invalidate(): void {
 		this.cachedWidth = undefined;
+		this.cachedChromeKey = undefined;
 		this.cachedLines = undefined;
 		this.md.invalidate();
 	}
 
 	render(width: number): string[] {
-		if (this.cachedLines && this.cachedWidth === width) return this.cachedLines;
-		// " ● " = 1 margin + dot + space = 3 visible chars
-		const PREFIX_W = 3;
-		if (width <= PREFIX_W) {
+		const settings = getMessageChromeSettings();
+		const chromeKey = messageChromeCacheKey(settings, "assistant");
+		if (this.cachedLines && this.cachedWidth === width && this.cachedChromeKey === chromeKey) return this.cachedLines;
+		const prefixGlyph = settings.messageStyle === "classic" ? "●" : settings.assistantPrefix;
+		const prefixWidth = Math.max(1, visibleWidth(` ${prefixGlyph} `));
+		if (width <= prefixWidth) {
 			this.cachedWidth = width;
-			this.cachedLines = [" ● "];
+			this.cachedChromeKey = chromeKey;
+			this.cachedLines = [` ${prefixGlyph} `];
 			return this.cachedLines;
 		}
-		const lines = sanitizeRenderedTextBlockLines(this.md.render(width - PREFIX_W));
+		const lines = sanitizeRenderedTextBlockLines(this.md.render(width - prefixWidth));
 		const looksLikeTaskStatus = lines.some((line) => /\b(?:transcript:|No output\.|Wrapped up)/.test(stripAnsi(line)));
-		const displayLines = looksLikeTaskStatus ? lines.map(normalizeLeadingCheckGlyph) : lines;
-		let dotPlaced = false;
-		const rendered = displayLines.map((line: string) => {
-			if (!dotPlaced && stripAnsi(line).trim()) {
-				dotPlaced = true;
-				return ` ● ${line}`;
-			}
-			return `   ${line}`;
-		});
+		const rendered = settings.messageStyle === "classic"
+			? renderClassicPrefixedLines(lines, "●", looksLikeTaskStatus)
+			: formatTranscriptLines(lines, {
+				prefix: settings.assistantPrefix,
+				spacing: settings.messageSpacing,
+				normalizeChecks: looksLikeTaskStatus,
+				visibleWidth,
+			});
 		this.cachedWidth = width;
+		this.cachedChromeKey = chromeKey;
 		this.cachedLines = rendered;
 		return rendered;
 	}
@@ -518,6 +598,7 @@ class DottedParagraph {
 class ThinkingParagraph {
 	private md: InstanceType<typeof Markdown>;
 	private cachedWidth?: number;
+	private cachedChromeKey?: string;
 	private cachedLines?: string[];
 
 	constructor(
@@ -559,30 +640,39 @@ class ThinkingParagraph {
 
 	invalidate(): void {
 		this.cachedWidth = undefined;
+		this.cachedChromeKey = undefined;
 		this.cachedLines = undefined;
 		this.md.invalidate();
 	}
 
 	render(width: number): string[] {
-		if (this.cachedLines && this.cachedWidth === width) return this.cachedLines;
-		// " ✻ " = 1 margin + symbol + space = 3 visible chars
-		const PREFIX_W = 3;
-		const prefix = `${WORKED_LINE_FG}✻${RESET}`;
-		if (width <= PREFIX_W) {
+		const settings = getMessageChromeSettings();
+		const chromeKey = messageChromeCacheKey(settings, "thinking");
+		if (this.cachedLines && this.cachedWidth === width && this.cachedChromeKey === chromeKey) return this.cachedLines;
+		const prefixGlyph = settings.messageStyle === "classic" ? "✻" : settings.thinkingPrefix;
+		const coloredPrefixGlyph = `${WORKED_LINE_FG}${prefixGlyph}${RESET}`;
+		const prefixWidth = Math.max(1, visibleWidth(` ${prefixGlyph} `));
+		if (width <= prefixWidth) {
 			this.cachedWidth = width;
-			this.cachedLines = [` ${prefix} `];
+			this.cachedChromeKey = chromeKey;
+			this.cachedLines = [` ${coloredPrefixGlyph} `];
 			return this.cachedLines;
 		}
-		const lines = sanitizeRenderedTextBlockLines(this.md.render(width - PREFIX_W));
-		let symbolPlaced = false;
-		const rendered = lines.map((line: string) => {
-			if (!symbolPlaced && stripAnsi(line).trim()) {
-				symbolPlaced = true;
-				return ` ${prefix} ${line}`;
-			}
-			return `   ${line}`;
-		});
+		const lines = sanitizeRenderedTextBlockLines(this.md.render(width - prefixWidth));
+		const rendered = settings.messageStyle === "classic"
+			? renderClassicPrefixedLines(lines, coloredPrefixGlyph, false)
+			: colorFirstTranscriptPrefix(
+				formatTranscriptLines(lines, {
+					prefix: prefixGlyph,
+					spacing: settings.messageSpacing,
+					normalizeChecks: false,
+					visibleWidth,
+				}),
+				prefixGlyph,
+				coloredPrefixGlyph,
+			);
 		this.cachedWidth = width;
+		this.cachedChromeKey = chromeKey;
 		this.cachedLines = rendered;
 		return rendered;
 	}
@@ -2641,13 +2731,14 @@ function stripThinkingPresentationArtifacts(text: string): string {
 }
 
 function prefixThinkingLine(text: string, _theme: Theme | undefined): string {
-	if (!ANSI_PRESENT_RE.test(text) && text.startsWith("Thinking: ") && !/^Thinking:\s*thinking:\s*/i.test(text)) {
+	const settings = getMessageChromeSettings();
+	if (settings.messageStyle === "classic" && !ANSI_PRESENT_RE.test(text) && text.startsWith("Thinking: ") && !/^Thinking:\s*thinking:\s*/i.test(text)) {
 		return text;
 	}
 	const normalized = stripThinkingPresentationArtifacts(text).trim();
 	if (!normalized) return text;
 	// Plain text — no ANSI colors, no theme. The ThinkingParagraph handles styling.
-	return `Thinking: ${normalized}`;
+	return settings.messageStyle === "classic" ? `Thinking: ${normalized}` : normalized;
 }
 
 function registerThinkingLabels(pi: ExtensionAPI): void {
@@ -3920,16 +4011,167 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
+	const MESSAGE_COMMANDS = ["style", "spacing", "assistant-prefix", "thinking-prefix", "tip", "hidden-thinking-label", "reset", "status"] as const;
+	pi.registerCommand("cc-message", {
+		description: "Configure Claude-style assistant/thinking transcript chrome",
+		getArgumentCompletions(prefix: string) {
+			const parts = prefix.split(/\s+/);
+			if (parts.length <= 1) {
+				const first = (parts[0] ?? "").toLowerCase();
+				return MESSAGE_COMMANDS
+					.filter((c) => c.startsWith(first))
+					.map((c) => ({
+						value: c,
+						label: c,
+						description:
+							c === "style" ? "Set transcript style: claude or classic"
+							: c === "spacing" ? "Set blank-line rhythm: compact or comfortable"
+							: c === "assistant-prefix" ? "Set assistant paragraph prefix glyph/text"
+							: c === "thinking-prefix" ? "Set visible thinking prefix glyph/text"
+							: c === "tip" ? "Enable, disable, or customize active working tip line"
+							: c === "hidden-thinking-label" ? "Set label shown when thinking is hidden"
+							: c === "reset" ? "Reset message chrome settings"
+							: "Show current message chrome settings",
+					}));
+			}
+			if (parts[0] === "style") {
+				const valuePrefix = (parts[1] ?? "").toLowerCase();
+				return ["claude", "classic"]
+					.filter((v) => v.startsWith(valuePrefix))
+					.map((v) => ({ value: `style ${v}`, label: v, description: v === "claude" ? "Screenshot-style transcript rhythm" : "Older package spacing/prefix behavior" }));
+			}
+			if (parts[0] === "spacing") {
+				const valuePrefix = (parts[1] ?? "").toLowerCase();
+				return ["comfortable", "compact"]
+					.filter((v) => v.startsWith(valuePrefix))
+					.map((v) => ({ value: `spacing ${v}`, label: v, description: v === "comfortable" ? "Preserve one blank line between paragraphs" : "Remove blank lines inside assistant/thinking blocks" }));
+			}
+			if (parts[0] === "tip") {
+				const valuePrefix = (parts[1] ?? "").toLowerCase();
+				return ["on", "off", "text", "reset"]
+					.filter((v) => v.startsWith(valuePrefix))
+					.map((v) => ({ value: `tip ${v}`, label: v, description: v === "text" ? "Set custom active working tip text" : `${v} working tip line` }));
+			}
+			return [];
+		},
+		async handler(args: string, ctx: any) {
+			const rawArgs = args.trim();
+			const parts = rawArgs.split(/\s+/).filter((p: string) => p.length > 0);
+			const sub = (parts[0] ?? "status").toLowerCase();
+			const current = getMessageChromeSettings();
+			const notifyStatus = () => {
+				if (!ctx.hasUI) return;
+				ctx.ui.notify([
+					`Message style: ${current.messageStyle}`,
+					`Assistant prefix: ${current.assistantPrefix}`,
+					`Thinking prefix: ${current.thinkingPrefix}`,
+					`Spacing: ${current.messageSpacing}`,
+					`Working tip: ${current.workingTipEnabled ? "on" : "off"}`,
+					`Tip text: ${current.workingTipText}`,
+					`Hidden thinking label: ${current.hiddenThinkingLabel}`,
+				].join("\n"), "info");
+			};
+
+			if (!rawArgs || sub === "status") {
+				notifyStatus();
+				return;
+			}
+
+			if (sub === "reset") {
+				for (const key of ["messageStyle", "assistantPrefix", "thinkingPrefix", "messageSpacing", "workingTipEnabled", "workingTipText", "hiddenThinkingLabel"]) {
+					writeSettingsKey(key, undefined);
+				}
+				bustSpinnerSettingsCache();
+				applyHiddenThinkingLabel(ctx);
+				if (ctx.hasUI) ctx.ui.notify("Message chrome reset to Claude-style defaults", "info");
+				return;
+			}
+
+			if (sub === "style") {
+				const value = (parts[1] ?? "").toLowerCase();
+				if (value !== "claude" && value !== "classic") {
+					if (ctx.hasUI) ctx.ui.notify("Usage: /cc-message style claude|classic", "error");
+					return;
+				}
+				writeSettingsKey("messageStyle", value);
+				writeSettingsKey("workingTipEnabled", value === "classic" ? false : undefined);
+				bustSpinnerSettingsCache();
+				if (ctx.hasUI) ctx.ui.notify(`Message style → ${value}`, "info");
+				return;
+			}
+
+			if (sub === "spacing") {
+				const value = (parts[1] ?? "").toLowerCase();
+				if (value !== "compact" && value !== "comfortable") {
+					if (ctx.hasUI) ctx.ui.notify("Usage: /cc-message spacing compact|comfortable", "error");
+					return;
+				}
+				writeSettingsKey("messageSpacing", value);
+				if (ctx.hasUI) ctx.ui.notify(`Message spacing → ${value}`, "info");
+				return;
+			}
+
+			if (sub === "assistant-prefix" || sub === "thinking-prefix") {
+				const rawValue = rawArgs.replace(new RegExp(`^${sub}\\s*`, "i"), "");
+				const fallback = sub === "assistant-prefix" ? "●" : "✻";
+				const value = sanitizeMessagePrefix(rawValue, fallback);
+				writeSettingsKey(sub === "assistant-prefix" ? "assistantPrefix" : "thinkingPrefix", value);
+				if (ctx.hasUI) ctx.ui.notify(`${sub === "assistant-prefix" ? "Assistant" : "Thinking"} prefix → ${value}`, "info");
+				return;
+			}
+
+			if (sub === "tip") {
+				const action = (parts[1] ?? "").toLowerCase();
+				if (action === "on" || action === "off") {
+					writeSettingsKey("workingTipEnabled", action === "on");
+					bustSpinnerSettingsCache();
+					if (ctx.hasUI) ctx.ui.notify(`Working tip → ${action}`, "info");
+					return;
+				}
+				if (action === "reset") {
+					writeSettingsKey("workingTipEnabled", undefined);
+					writeSettingsKey("workingTipText", undefined);
+					bustSpinnerSettingsCache();
+					if (ctx.hasUI) ctx.ui.notify("Working tip reset", "info");
+					return;
+				}
+				if (action === "text") {
+					const textArg = rawArgs.match(/^tip\s+text(?:\s+(.+))?$/i)?.[1] ?? "";
+					const value = resolveMessageChromeSettings({ workingTipText: textArg }).workingTipText;
+					writeSettingsKey("workingTipText", value);
+					bustSpinnerSettingsCache();
+					if (ctx.hasUI) ctx.ui.notify(`Working tip text → ${value}`, "info");
+					return;
+				}
+				if (ctx.hasUI) ctx.ui.notify("Usage: /cc-message tip on|off|reset|text <text>", "error");
+				return;
+			}
+
+			if (sub === "hidden-thinking-label") {
+				const textArg = rawArgs.match(/^hidden-thinking-label(?:\s+(.+))?$/i)?.[1] ?? "";
+				const value = resolveMessageChromeSettings({ hiddenThinkingLabel: textArg }).hiddenThinkingLabel;
+				writeSettingsKey("hiddenThinkingLabel", value);
+				applyHiddenThinkingLabel(ctx);
+				if (ctx.hasUI) ctx.ui.notify(`Hidden thinking label → ${value}`, "info");
+				return;
+			}
+
+			if (ctx.hasUI) ctx.ui.notify("Usage: /cc-message style|spacing|assistant-prefix|thinking-prefix|tip|hidden-thinking-label|reset|status", "error");
+		},
+	});
+
 	pi.on("session_start", async (_event, ctx) => {
 		if (!ctx.hasUI) return;
 		applyToolBackgroundMode(ctx.ui.theme);
 		applyThemePaletteIfNeeded(ctx.ui.theme);
+		applyHiddenThinkingLabel(ctx);
 	});
 
 	pi.on("turn_start", async (_event, ctx) => {
 		if (!ctx.hasUI) return;
 		applyToolBackgroundMode(ctx.ui.theme);
 		applyThemePaletteIfNeeded(ctx.ui.theme);
+		applyHiddenThinkingLabel(ctx);
 	});
 
 	const cwd = process.cwd();

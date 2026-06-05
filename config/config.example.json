@@ -14,5 +14,12 @@
   "diffColors": {},
   "spinnerColor": "borderAccent",
   "spinnerVerbs": ["Reviewing", "Polishing"],
-  "spinnerVerbMode": "append"
+  "spinnerVerbMode": "append",
+  "messageStyle": "claude",
+  "assistantPrefix": "●",
+  "thinkingPrefix": "✻",
+  "messageSpacing": "comfortable",
+  "workingTipEnabled": true,
+  "workingTipText": "Run /install-github-app to tag @claude right from your GitHub issues and PRs",
+  "hiddenThinkingLabel": "Pondering..."
 }
