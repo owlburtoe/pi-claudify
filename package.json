@@ -26,11 +26,13 @@
   "files": [
     "extensions/index.ts",
     "extensions/spinner.ts",
+    "extensions/message-chrome.ts",
     "config/config.example.json",
     "README.md"
   ],
   "scripts": {
-    "bench:tools": "bun scripts/benchmark-tools.ts"
+    "bench:tools": "bun scripts/benchmark-tools.ts",
+    "test:message-chrome": "bun scripts/test-message-chrome.ts"
   },
   "dependencies": {
     "@shikijs/cli": "^4.0.2",

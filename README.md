@@ -11,6 +11,7 @@ Claude Code inspired tool rendering for Pi — Shiki-powered diffs, status dots,
 - **Diff stat bar** with colored add/remove summary and hunk metadata
 - **Progressive collapsed diff hints** that shorten on narrow terminals
 - **Thinking labels** during streaming and final messages, with context sanitization
+- **Claude-style transcript grammar controls** for assistant/thinking prefixes, message spacing, hidden thinking labels, and active working tips
 - **MCP-aware rendering** with hidden, summary, and preview modes
 - **Configurable output modes** for read, search, bash, and MCP results
 - **Transparent tool backgrounds** in `transparent` or `border` mode
@@ -36,7 +37,14 @@ Set in `.pi/settings.json` or `~/.pi/settings.json`:
   "diffTheme": "github-dark",
   "spinnerColor": "borderAccent",
   "spinnerVerbs": ["Reviewing", "Polishing"],
-  "spinnerVerbMode": "append"
+  "spinnerVerbMode": "append",
+  "messageStyle": "claude",
+  "assistantPrefix": "●",
+  "thinkingPrefix": "✻",
+  "messageSpacing": "comfortable",
+  "workingTipEnabled": true,
+  "workingTipText": "Run /install-github-app to tag @claude right from your GitHub issues and PRs",
+  "hiddenThinkingLabel": "Pondering..."
 }
 ```
 
@@ -90,6 +98,25 @@ The spinner glyph and verb text (e.g. `✻ Cooking…`) share `borderAccent` by 
 ```
 
 Color selections are persisted as `spinnerColor` / `spinnerStatusColor` in `~/.pi/settings.json` and applied on the next spinner tick. Older `spinnerVerbColor` settings still work as a backward-compatible alias. Custom verbs are persisted as `spinnerVerbs` and `spinnerVerbMode`; they are picked at the next turn start. `/cc-spinner verbs ...` writes user settings in `~/.pi/settings.json`; project-level custom verbs can be set manually in `.pi/settings.json`. When both project and user spinner settings exist, the spinner reader applies project settings first and user settings second.
+
+#### Tune assistant/thinking transcript chrome with `/cc-message`
+
+```text
+/cc-message                              # show current message chrome settings
+/cc-message style claude                 # screenshot-style transcript rhythm
+/cc-message style classic                # older package spacing/prefix behavior
+/cc-message spacing comfortable          # keep one blank line between paragraphs
+/cc-message spacing compact              # remove blank lines inside assistant/thinking blocks
+/cc-message assistant-prefix ●           # set assistant paragraph prefix
+/cc-message thinking-prefix ✻            # set visible thinking prefix
+/cc-message hidden-thinking-label Pondering...
+/cc-message tip on                       # show active working tip line
+/cc-message tip off                      # hide active working tip line
+/cc-message tip text Run /help for tips   # set active working tip text
+/cc-message reset                        # restore message chrome defaults
+```
+
+`messageStyle: "claude"` trims leading/trailing blank render lines, collapses paragraph gaps, and aligns wrapped assistant/thinking lines under the message body, matching Claude Code's sparse transcript grammar. `messageStyle: "classic"` keeps the previous package behavior. The active working tip is rendered as a subordinate `└─ Tip:` line under the spinner when supported by the Pi loader.
 
 ### Tool background modes
 
