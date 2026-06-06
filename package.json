@@ -1,6 +1,6 @@
 {
-  "name": "pi-claude-style-tools",
-  "version": "1.0.25",
+  "name": "@owlburtoe/pi-cc-tools",
+  "version": "1.0.1",
   "description": "Claude Code-style tool rows for pi with Ctrl+O image previews and consistent built-in, MCP, and custom tool rendering",
   "keywords": [
     "pi-package",
@@ -17,11 +17,11 @@
   "author": "FammasMaz",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/FammasMaz/pi-cc-tools.git"
+    "url": "git+https://forgejo.owlburtoe.dev/owlburtoe/pi-claude-style-tools.git"
   },
-  "homepage": "https://github.com/FammasMaz/pi-cc-tools#readme",
+  "homepage": "https://forgejo.owlburtoe.dev/owlburtoe/pi-claude-style-tools",
   "bugs": {
-    "url": "https://github.com/FammasMaz/pi-cc-tools/issues"
+    "url": "https://forgejo.owlburtoe.dev/owlburtoe/pi-claude-style-tools/issues"
   },
   "files": [
     "extensions/index.ts",
