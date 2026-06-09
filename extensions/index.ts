@@ -84,6 +84,8 @@ interface SettingsFile {
 	expandedPreviewMaxLines?: number;
 	bashOutputMode?: "opencode" | "summary" | "preview";
 	bashCollapsedLines?: number;
+	/** When true (default), consecutive bash tool rows render without the extra inter-tool spacer. */
+	bashStackConsecutive?: boolean;
 	showTruncationHints?: boolean;
 	diffCollapsedLines?: number;
 	diffTheme?: string;
@@ -329,6 +331,44 @@ function isToolExecutionLike(value: unknown): value is { toolName: string; toolC
 	return typeof candidate.toolName === "string" && typeof candidate.toolCallId === "string";
 }
 
+function isBashToolExecution(value: unknown): boolean {
+	return isToolExecutionLike(value) && (value as any).toolName === "bash";
+}
+
+function shouldStackConsecutiveBash(): boolean {
+	return readSettings().bashStackConsecutive !== false;
+}
+
+function hasConsecutiveBashToolChildren(children: unknown[]): boolean {
+	let previousWasBash = false;
+	for (const child of children) {
+		const currentIsBash = isBashToolExecution(child);
+		if (currentIsBash && previousWasBash) return true;
+		previousWasBash = currentIsBash;
+	}
+	return false;
+}
+
+function dropLeadingSpacerLine(lines: string[]): string[] {
+	return lines.length > 0 && isBlankLine(lines[0]) ? lines.slice(1) : lines;
+}
+
+function renderWithStackedConsecutiveBash(container: any, width: number): string[] | null {
+	if (!shouldStackConsecutiveBash()) return null;
+	const children = Array.isArray(container?.children) ? container.children : null;
+	if (!children || !hasConsecutiveBashToolChildren(children)) return null;
+
+	const rendered: string[] = [];
+	let previousWasBash = false;
+	for (const child of children) {
+		const currentIsBash = isBashToolExecution(child);
+		const childLines = typeof child?.render === "function" ? child.render(width) : [];
+		rendered.push(...(currentIsBash && previousWasBash ? dropLeadingSpacerLine(childLines) : childLines));
+		previousWasBash = currentIsBash;
+	}
+	return rendered;
+}
+
 function isTerminalImageLine(line: string): boolean {
 	return line.includes(KITTY_IMAGE_PREFIX) || line.includes(ITERM2_IMAGE_PREFIX);
 }
@@ -359,6 +399,11 @@ function patchGlobalToolBorders(): void {
 
 	const originalRender = proto.render;
 	proto.render = function patchedContainerRender(width: number): string[] {
+		if (!isToolExecutionLike(this)) {
+			const stacked = renderWithStackedConsecutiveBash(this, width);
+			if (stacked) return stacked;
+		}
+
 		if (isToolExecutionLike(this)) {
 			const cached = (this as any)[TOOL_RENDER_CACHE];
 			if (cached?.width === width && cached?.mode === toolBackgroundMode) {
@@ -1322,6 +1367,10 @@ function expandedPreviewLimit(): number {
 function bashCollapsedLimit(): number {
 	const value = readSettings().bashCollapsedLines;
 	return typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.floor(value) : 10;
+}
+
+function bashOutputMode(): "opencode" | "summary" | "preview" {
+	return getMode(readSettings().bashOutputMode, ["opencode", "summary", "preview"] as const, "opencode");
 }
 
 function diffCollapsedLimit(): number {
@@ -4245,15 +4294,26 @@ export default function (pi: ExtensionAPI) {
 			}
 			clearBlinkTimer(ctx);
 			setToolStatus(ctx, ctx.isError ? "error" : "success");
-			const exitMatch = output.match(/exit code: (\d+)/);
+			const exitMatch = output.match(/(?:exit code:|exited with code)\s+(\d+)/i);
 			const exitCode = exitMatch ? Number.parseInt(exitMatch[1], 10) : null;
-			let text = exitCode === null || exitCode === 0 ? theme.fg("success", "Done") : theme.fg("error", `Exit ${exitCode}`);
+			const isError = ctx.isError || (exitCode !== null && exitCode !== 0);
+			let text = isError
+				? theme.fg("error", exitCode !== null ? `Exit ${exitCode}` : "Failed")
+				: theme.fg("success", "Done");
 			text += theme.fg("muted", ` (${nonEmpty.length} lines)`);
 			if (details?.truncation?.truncated) text += theme.fg("warning", " [truncated]");
+
+			const mode = bashOutputMode();
+			if (mode === "summary") return makeText(ctx.lastComponent, withBranch(text, theme));
+			if (mode === "preview") {
+				if (nonEmpty.length === 0) return makeText(ctx.lastComponent, withBranch(text, theme));
+				const preview = buildPreviewText(nonEmpty.map((line) => theme.fg(isError ? "error" : "dim", line)), expanded, theme, bashCollapsedLimit());
+				return makeText(ctx.lastComponent, withBranch(`${text}\n${preview}`, theme));
+			}
+
 			if (!expanded && nonEmpty.length > 0) return makeText(ctx.lastComponent, withBranch(`${text}${theme.fg("muted", " • Ctrl+O to expand")}`, theme));
 			if (!expanded) return makeText(ctx.lastComponent, withBranch(text, theme));
-			const collapsed = bashCollapsedLimit();
-			text += `\n${buildPreviewText(nonEmpty.map((line) => theme.fg("dim", line)), false, theme, collapsed)}`;
+			text += `\n${buildPreviewText(nonEmpty.map((line) => theme.fg(isError ? "error" : "dim", line)), true, theme, bashCollapsedLimit())}`;
 			return makeText(ctx.lastComponent, withBranch(text, theme));
 		},
 	});
