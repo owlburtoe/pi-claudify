@@ -7,6 +7,7 @@
   "expandedPreviewMaxLines": 4000,
   "bashOutputMode": "opencode",
   "bashCollapsedLines": 10,
+  "bashStackConsecutive": true,
   "diffCollapsedLines": 24,
   "showTruncationHints": false,
   "themeAdaptive": true,

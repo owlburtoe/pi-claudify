@@ -32,6 +32,7 @@ Set in `.pi/settings.json` or `~/.pi/settings.json`:
   "previewLines": 8,
   "bashOutputMode": "opencode",
   "bashCollapsedLines": 10,
+  "bashStackConsecutive": true,
   "diffCollapsedLines": 24,
   "themeAdaptive": true,
   "diffTheme": "github-dark",
@@ -134,6 +135,20 @@ Color selections are persisted as `spinnerColor` / `spinnerStatusColor` in `~/.p
 | `searchOutputMode` | `hidden`, `count`, `preview` | `preview` |
 | `mcpOutputMode` | `hidden`, `summary`, `preview` | `preview` |
 | `bashOutputMode` | `opencode`, `summary`, `preview` | `opencode` |
+
+`bashOutputMode` behavior:
+
+| Value | Behavior |
+|-------|----------|
+| `opencode` | Compact status while collapsed, with `Ctrl+O` hint for output preview |
+| `summary` | Status only; no output preview or expansion hint |
+| `preview` | Show a small output preview even while collapsed |
+
+### Boolean settings
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `bashStackConsecutive` | `true` | Remove the extra synthetic spacer between adjacent bash tool rows so command bursts render as a tight stack |
 
 ### Numeric settings
 
