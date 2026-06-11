@@ -1,6 +1,6 @@
 {
   "name": "@owlburtoe/pi-cc-tools",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Claude Code-style tool rows for pi with Ctrl+O image previews and consistent built-in, MCP, and custom tool rendering",
   "keywords": [
     "pi-package",
@@ -32,6 +32,7 @@
   ],
   "scripts": {
     "bench:tools": "bun scripts/benchmark-tools.ts",
+    "test:bash-display": "bun scripts/test-bash-display.ts",
     "test:message-chrome": "bun scripts/test-message-chrome.ts"
   },
   "dependencies": {
