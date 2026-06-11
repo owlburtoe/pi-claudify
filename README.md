@@ -5,6 +5,7 @@ Claude Code inspired tool rendering for Pi — Shiki-powered diffs, status dots,
 ## Features
 
 - **Compact built-in tool rendering** for `read`, `bash`, `grep`, `find`, `ls`, `edit`, and `write`
+- **Semantic bash display** that renders common read-only shell one-liners like `nl -ba file | sed -n '1,200p'` as Claude Code-style `Read file (lines 1-200)` rows
 - **Claude-style OpenAI tool rendering** for `apply_patch` plus common Pi/OpenAI-style tools like `webfetch`, `web_search`, `fetch_content`, task tools, and context tools
 - **`apply_patch` diff previews** that render parsed file patches in the call phase, similar to `edit`/`write`
 - **Adaptive edit/write diffs** with split or unified layouts, syntax highlighting, and inline word-level emphasis
@@ -33,6 +34,7 @@ Set in `.pi/settings.json` or `~/.pi/settings.json`:
   "bashOutputMode": "opencode",
   "bashCollapsedLines": 10,
   "bashStackConsecutive": true,
+  "bashSemanticDisplay": true,
   "diffCollapsedLines": 24,
   "themeAdaptive": true,
   "diffTheme": "github-dark",
@@ -140,7 +142,7 @@ Color selections are persisted as `spinnerColor` / `spinnerStatusColor` in `~/.p
 
 | Value | Behavior |
 |-------|----------|
-| `opencode` | Compact status while collapsed, with `Ctrl+O` hint for output preview |
+| `opencode` | Compact status while collapsed, with `Ctrl+O` hint for output preview on raw shell commands. Semantic read-only bash rows omit the repeated hint to stay closer to Claude Code. |
 | `summary` | Status only; no output preview or expansion hint |
 | `preview` | Show a small output preview even while collapsed |
 
@@ -149,6 +151,7 @@ Color selections are persisted as `spinnerColor` / `spinnerStatusColor` in `~/.p
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `bashStackConsecutive` | `true` | Remove the extra synthetic spacer between adjacent bash tool rows so command bursts render as a tight stack |
+| `bashSemanticDisplay` | `true` | Render common read-only shell file-inspection commands as semantic `Read` rows instead of raw `Bash` rows |
 
 ### Numeric settings
 

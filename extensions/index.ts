@@ -86,6 +86,8 @@ interface SettingsFile {
 	bashCollapsedLines?: number;
 	/** When true (default), consecutive bash tool rows render without the extra inter-tool spacer. */
 	bashStackConsecutive?: boolean;
+	/** When true (default), read-only shell file-inspection one-liners render as semantic Read rows instead of raw Bash rows. */
+	bashSemanticDisplay?: boolean;
 	showTruncationHints?: boolean;
 	diffCollapsedLines?: number;
 	diffTheme?: string;
@@ -1371,6 +1373,191 @@ function bashCollapsedLimit(): number {
 
 function bashOutputMode(): "opencode" | "summary" | "preview" {
 	return getMode(readSettings().bashOutputMode, ["opencode", "summary", "preview"] as const, "opencode");
+}
+
+function bashSemanticDisplayEnabled(): boolean {
+	return readSettings().bashSemanticDisplay !== false;
+}
+
+export interface BashDisplayInfo {
+	kind: "read";
+	label: "Read";
+	path: string;
+	rangeLabel?: string;
+	suppressCollapsedHint: boolean;
+}
+
+function tokenizeShellCommand(command: string): string[] | null {
+	const tokens: string[] = [];
+	let current = "";
+	let quote: "'" | '"' | null = null;
+	let escaping = false;
+
+	const push = () => {
+		if (current.length > 0) {
+			tokens.push(current);
+			current = "";
+		}
+	};
+
+	for (let i = 0; i < command.length; i++) {
+		const char = command[i];
+		if (escaping) {
+			current += char;
+			escaping = false;
+			continue;
+		}
+		if (quote) {
+			if (char === quote) {
+				quote = null;
+				continue;
+			}
+			if (quote === '"' && char === "\\") {
+				escaping = true;
+				continue;
+			}
+			current += char;
+			continue;
+		}
+		if (char === "\\") {
+			escaping = true;
+			continue;
+		}
+		if (char === "'" || char === '"') {
+			quote = char;
+			continue;
+		}
+		if (/\s/.test(char)) {
+			push();
+			continue;
+		}
+		if (char === "|" || char === ";") {
+			push();
+			if (char === "|" && command[i + 1] === "|") {
+				tokens.push("||");
+				i++;
+			} else {
+				tokens.push(char);
+			}
+			continue;
+		}
+		if (char === "&" && command[i + 1] === "&") {
+			push();
+			tokens.push("&&");
+			i++;
+			continue;
+		}
+		current += char;
+	}
+	if (escaping) current += "\\";
+	if (quote) return null;
+	push();
+	return tokens;
+}
+
+function isControlToken(token: string): boolean {
+	return token === "&&" || token === "||" || token === ";";
+}
+
+function isOptionToken(token: string): boolean {
+	return token.startsWith("-") && token !== "-" && token !== "--";
+}
+
+function singlePathArg(tokens: readonly string[]): string | null {
+	const paths = tokens.filter((token) => token !== "--" && token !== "-" && !isOptionToken(token));
+	return paths.length === 1 ? paths[0] : null;
+}
+
+function formatSedRangeLabel(script: string | undefined): string | undefined {
+	if (!script) return undefined;
+	const match = script.match(/^(\d+|\$)(?:,(\d+|\$))?p$/);
+	if (!match) return undefined;
+	const start = match[1];
+	const end = match[2];
+	if (!end || end === start) return `line ${start}`;
+	return `lines ${start}-${end}`;
+}
+
+function parseSedPrintRange(tokens: readonly string[]): string | undefined {
+	for (let i = 0; i < tokens.length; i++) {
+		if (tokens[i] === "-n" && tokens[i + 1]) {
+			const label = formatSedRangeLabel(tokens[i + 1]);
+			if (label) return label;
+		}
+		const direct = formatSedRangeLabel(tokens[i]);
+		if (direct) return direct;
+	}
+	return undefined;
+}
+
+function classifyNlRead(tokens: readonly string[]): BashDisplayInfo | null {
+	const pipeIndex = tokens.indexOf("|");
+	const left = pipeIndex === -1 ? tokens : tokens.slice(0, pipeIndex);
+	if (left[0] !== "nl") return null;
+	const path = singlePathArg(left.slice(1));
+	if (!path) return null;
+	let rangeLabel: string | undefined;
+	if (pipeIndex !== -1) {
+		const right = tokens.slice(pipeIndex + 1);
+		if (right[0] !== "sed" || right.includes("|")) return null;
+		rangeLabel = parseSedPrintRange(right);
+	}
+	return { kind: "read", label: "Read", path, rangeLabel, suppressCollapsedHint: true };
+}
+
+function classifySedRead(tokens: readonly string[]): BashDisplayInfo | null {
+	if (tokens[0] !== "sed") return null;
+	const rangeLabel = parseSedPrintRange(tokens);
+	if (!rangeLabel) return null;
+	const scriptIndex = tokens.findIndex((token) => formatSedRangeLabel(token) !== undefined);
+	const path = singlePathArg(tokens.slice(scriptIndex + 1));
+	if (!path) return null;
+	return { kind: "read", label: "Read", path, rangeLabel, suppressCollapsedHint: true };
+}
+
+function classifyCatRead(tokens: readonly string[]): BashDisplayInfo | null {
+	if (tokens[0] !== "cat") return null;
+	const path = singlePathArg(tokens.slice(1));
+	if (!path) return null;
+	return { kind: "read", label: "Read", path, suppressCollapsedHint: true };
+}
+
+function classifyHeadTailRead(tokens: readonly string[]): BashDisplayInfo | null {
+	const command = tokens[0];
+	if (command !== "head" && command !== "tail") return null;
+	const args = tokens.slice(1);
+	let count: string | undefined;
+	const pathCandidates: string[] = [];
+	for (let i = 0; i < args.length; i++) {
+		const token = args[i];
+		if (token === "--") continue;
+		if (token === "-n" && args[i + 1]) {
+			count = args[i + 1];
+			i++;
+			continue;
+		}
+		const compactCount = token.match(/^-([0-9]+)$/)?.[1];
+		if (compactCount) {
+			count = compactCount;
+			continue;
+		}
+		if (isOptionToken(token)) continue;
+		pathCandidates.push(token);
+	}
+	if (pathCandidates.length !== 1) return null;
+	const amount = count && /^\d+$/.test(count) ? count : "10";
+	const rangeLabel = `${command === "head" ? "first" : "last"} ${amount} lines`;
+	return { kind: "read", label: "Read", path: pathCandidates[0], rangeLabel, suppressCollapsedHint: true };
+}
+
+export function classifyBashCommandForDisplay(command: string): BashDisplayInfo | null {
+	const tokens = tokenizeShellCommand(command.trim());
+	if (!tokens || tokens.length === 0) return null;
+	if (tokens.some(isControlToken)) return null;
+	return classifyNlRead(tokens)
+		?? classifySedRead(tokens)
+		?? classifyCatRead(tokens)
+		?? classifyHeadTailRead(tokens);
 }
 
 function diffCollapsedLimit(): number {
@@ -4281,16 +4468,23 @@ export default function (pi: ExtensionAPI) {
 		},
 		renderCall(args, theme, ctx) {
 			syncToolCallStatus(ctx);
-			const summary = stableCallSummary(ctx, "_callSummary", () => summarizeText(args.command, 72));
-			return makeText(ctx.lastComponent, toolHeader("Bash", summary, theme, toolStatusDot(ctx, theme)));
+			const semantic = bashSemanticDisplayEnabled() ? classifyBashCommandForDisplay(args.command ?? "") : null;
+			const summary = stableCallSummary(ctx, "_callSummary", () => {
+				if (!semantic) return summarizeText(args.command, 72);
+				const path = sp(semantic.path);
+				return semantic.rangeLabel ? `${path} ${theme.fg("muted", `(${semantic.rangeLabel})`)}` : path;
+			});
+			return makeText(ctx.lastComponent, toolHeader(semantic?.label ?? "Bash", summary, theme, toolStatusDot(ctx, theme)));
 		},
 		renderResult(result, { expanded, isPartial }, theme, ctx) {
 			const details = result.details as BashToolDetails | undefined;
 			const output = result.content[0]?.type === "text" ? result.content[0].text : "";
 			const nonEmpty = output.split("\n").filter((line) => line.trim().length > 0);
+			const semantic = bashSemanticDisplayEnabled() ? classifyBashCommandForDisplay(ctx.args?.command ?? "") : null;
 			if (isPartial) {
 				setupBlinkTimer(ctx);
-				return makeText(ctx.lastComponent, withBranch(theme.fg("warning", `Running... (${nonEmpty.length} lines)`), theme));
+				const running = semantic?.kind === "read" ? "Reading" : "Running";
+				return makeText(ctx.lastComponent, withBranch(theme.fg("warning", `${running}... (${nonEmpty.length} lines)`), theme));
 			}
 			clearBlinkTimer(ctx);
 			setToolStatus(ctx, ctx.isError ? "error" : "success");
@@ -4299,8 +4493,9 @@ export default function (pi: ExtensionAPI) {
 			const isError = ctx.isError || (exitCode !== null && exitCode !== 0);
 			let text = isError
 				? theme.fg("error", exitCode !== null ? `Exit ${exitCode}` : "Failed")
-				: theme.fg("success", "Done");
-			text += theme.fg("muted", ` (${nonEmpty.length} lines)`);
+				: semantic?.kind === "read"
+					? `${theme.fg("success", "Read")} ${theme.fg("muted", `${nonEmpty.length} line${nonEmpty.length === 1 ? "" : "s"}`)}`
+					: `${theme.fg("success", "Done")}${theme.fg("muted", ` (${nonEmpty.length} lines)`)}`;
 			if (details?.truncation?.truncated) text += theme.fg("warning", " [truncated]");
 
 			const mode = bashOutputMode();
@@ -4311,7 +4506,10 @@ export default function (pi: ExtensionAPI) {
 				return makeText(ctx.lastComponent, withBranch(`${text}\n${preview}`, theme));
 			}
 
-			if (!expanded && nonEmpty.length > 0) return makeText(ctx.lastComponent, withBranch(`${text}${theme.fg("muted", " • Ctrl+O to expand")}`, theme));
+			if (!expanded && nonEmpty.length > 0) {
+				const hint = semantic?.suppressCollapsedHint ? "" : theme.fg("muted", " • Ctrl+O to expand");
+				return makeText(ctx.lastComponent, withBranch(`${text}${hint}`, theme));
+			}
 			if (!expanded) return makeText(ctx.lastComponent, withBranch(text, theme));
 			text += `\n${buildPreviewText(nonEmpty.map((line) => theme.fg(isError ? "error" : "dim", line)), true, theme, bashCollapsedLimit())}`;
 			return makeText(ctx.lastComponent, withBranch(text, theme));

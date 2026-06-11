@@ -32,6 +32,7 @@
   ],
   "scripts": {
     "bench:tools": "bun scripts/benchmark-tools.ts",
+    "test:bash-display": "bun scripts/test-bash-display.ts",
     "test:message-chrome": "bun scripts/test-message-chrome.ts"
   },
   "dependencies": {

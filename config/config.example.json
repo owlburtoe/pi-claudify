@@ -8,6 +8,7 @@
   "bashOutputMode": "opencode",
   "bashCollapsedLines": 10,
   "bashStackConsecutive": true,
+  "bashSemanticDisplay": true,
   "diffCollapsedLines": 24,
   "showTruncationHints": false,
   "themeAdaptive": true,
