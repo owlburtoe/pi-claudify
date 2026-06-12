@@ -6,6 +6,7 @@ Claude Code inspired tool rendering for Pi — Shiki-powered diffs, status dots,
 
 - **Compact built-in tool rendering** for `read`, `bash`, `grep`, `find`, `ls`, `edit`, and `write`
 - **Semantic bash display** that renders common read-only shell one-liners like `nl -ba file | sed -n '1,200p'` as Claude Code-style `Read file (lines 1-200)` rows
+- **Read-only inspection grouping** that collapses consecutive `read`/`grep`/`find`/`ls` rows into one Claude-style `Inspect` block, capped to five visible entries by default
 - **Claude-style OpenAI tool rendering** for `apply_patch` plus common Pi/OpenAI-style tools like `webfetch`, `web_search`, `fetch_content`, task tools, and context tools
 - **`apply_patch` diff previews** that render parsed file patches in the call phase, similar to `edit`/`write`
 - **Adaptive edit/write diffs** with split or unified layouts, syntax highlighting, and inline word-level emphasis
@@ -35,6 +36,8 @@ Set in `.pi/settings.json` or `~/.pi/settings.json`:
   "bashCollapsedLines": 10,
   "bashStackConsecutive": true,
   "bashSemanticDisplay": true,
+  "readOnlyToolGrouping": true,
+  "readOnlyToolGroupLimit": 5,
   "diffCollapsedLines": 24,
   "themeAdaptive": true,
   "diffTheme": "github-dark",
@@ -152,6 +155,7 @@ Color selections are persisted as `spinnerColor` / `spinnerStatusColor` in `~/.p
 |---------|---------|-------------|
 | `bashStackConsecutive` | `true` | Remove the extra synthetic spacer between adjacent bash tool rows so command bursts render as a tight stack |
 | `bashSemanticDisplay` | `true` | Render common read-only shell file-inspection commands as semantic `Read` rows instead of raw `Bash` rows |
+| `readOnlyToolGrouping` | `true` | Collapse adjacent read-only inspection tools into one `Inspect` block; mutating `write`/`edit`/`apply_patch` rows stay independent |
 
 ### Numeric settings
 
@@ -161,6 +165,7 @@ Color selections are persisted as `spinnerColor` / `spinnerStatusColor` in `~/.p
 | `expandedPreviewMaxLines` | `4000` | Max lines when fully expanded |
 | `bashCollapsedLines` | `10` | Lines for collapsed bash output |
 | `diffCollapsedLines` | `24` | Diff lines before collapsing |
+| `readOnlyToolGroupLimit` | `5` | Max inspection entries shown inside a grouped read-only tool block |
 
 ## Notes
 

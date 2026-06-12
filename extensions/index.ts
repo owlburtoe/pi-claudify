@@ -88,6 +88,8 @@ interface SettingsFile {
 	bashStackConsecutive?: boolean;
 	/** When true (default), read-only shell file-inspection one-liners render as semantic Read rows instead of raw Bash rows. */
 	bashSemanticDisplay?: boolean;
+	readOnlyToolGrouping?: boolean;
+	readOnlyToolGroupLimit?: number;
 	showTruncationHints?: boolean;
 	diffCollapsedLines?: number;
 	diffTheme?: string;
@@ -341,6 +343,253 @@ function shouldStackConsecutiveBash(): boolean {
 	return readSettings().bashStackConsecutive !== false;
 }
 
+function readOnlyToolGroupingEnabled(): boolean {
+	return readSettings().readOnlyToolGrouping !== false;
+}
+
+function readOnlyToolGroupLimit(): number {
+	const value = readSettings().readOnlyToolGroupLimit;
+	return typeof value === "number" && Number.isFinite(value) && value > 0
+		? Math.max(1, Math.min(20, Math.floor(value)))
+		: 5;
+}
+
+function toolComponentRecord(value: unknown): Record<string, any> {
+	return value as Record<string, any>;
+}
+
+function componentCwd(value: unknown): string {
+	const cwd = toolComponentRecord(value).cwd;
+	return typeof cwd === "string" && cwd ? cwd : process.cwd();
+}
+
+function componentTextContent(value: unknown): string {
+	return getTextContent(toolComponentRecord(value).result);
+}
+
+function componentHasImageResult(value: unknown): boolean {
+	return !!getFirstImageBlock(toolComponentRecord(value).result);
+}
+
+function bashReadDisplayInfo(value: unknown): BashDisplayInfo | null {
+	const rec = toolComponentRecord(value);
+	if (rec.toolName !== "bash" || !bashSemanticDisplayEnabled()) return null;
+	return classifyBashCommandForDisplay(rec.args?.command ?? "");
+}
+
+function isReadOnlyInspectionToolExecution(value: unknown): boolean {
+	if (!readOnlyToolGroupingEnabled() || !isToolExecutionLike(value)) return false;
+	const rec = toolComponentRecord(value);
+	if (rec.expanded === true || componentHasImageResult(value)) return false;
+	if (rec.toolName === "read" || rec.toolName === "grep" || rec.toolName === "find" || rec.toolName === "ls") return true;
+	return !!bashReadDisplayInfo(value);
+}
+
+function hasConsecutiveReadOnlyInspectionToolChildren(children: unknown[]): boolean {
+	let previousWasInspect = false;
+	for (const child of children) {
+		const currentIsInspect = isReadOnlyInspectionToolExecution(child);
+		if (currentIsInspect && previousWasInspect) return true;
+		previousWasInspect = currentIsInspect;
+	}
+	return false;
+}
+
+function plural(count: number, noun: string): string {
+	if (count === 1) return `1 ${noun}`;
+	const suffix = /(?:s|x|z|ch|sh)$/i.test(noun) ? "es" : "s";
+	return `${count} ${noun}${suffix}`;
+}
+
+function textDataLines(text: string): string[] {
+	return text.split("\n").filter((line) => line.trim().length > 0 && !line.trimStart().startsWith("["));
+}
+
+function compactList(values: string[], limit: number): string {
+	if (values.length === 0) return "";
+	const shown = values.slice(0, limit);
+	const suffix = values.length > shown.length ? `, … +${values.length - shown.length}` : "";
+	return `${shown.join(", ")}${suffix}`;
+}
+
+function uniqueLeadingGrepFiles(text: string, limit: number): string[] {
+	const seen = new Set<string>();
+	const files: string[] = [];
+	for (const rawLine of text.split("\n")) {
+		const line = rawLine.trim();
+		if (!line || line.startsWith("[")) continue;
+		const match = /^(.+?)(?::\d+:|-\d+-)/.exec(line);
+		if (!match) continue;
+		const file = match[1];
+		if (seen.has(file)) continue;
+		seen.add(file);
+		files.push(file);
+		if (files.length >= limit + 1) break;
+	}
+	return files;
+}
+
+function formatOffsetLimit(args: any): string {
+	const parts: string[] = [];
+	if (args?.offset !== undefined && args?.offset !== null) parts.push(`offset=${args.offset}`);
+	if (args?.limit !== undefined && args?.limit !== null) parts.push(`limit=${args.limit}`);
+	return parts.length > 0 ? ` (${parts.join(", ")})` : "";
+}
+
+function readInspectionTarget(value: unknown): string {
+	const rec = toolComponentRecord(value);
+	return `${shortPath(componentCwd(value), rec.args?.path ?? "")}${formatOffsetLimit(rec.args)}`;
+}
+
+function grepInspectionTarget(value: unknown): string {
+	const rec = toolComponentRecord(value);
+	const pattern = summarizeText(rec.args?.pattern ?? "", 40);
+	const path = rec.args?.path ? ` in ${shortPath(componentCwd(value), rec.args.path)}` : "";
+	return `"${pattern}"${path}`;
+}
+
+function findInspectionTarget(value: unknown): string {
+	const rec = toolComponentRecord(value);
+	const pattern = summarizeText(rec.args?.pattern ?? "", 40);
+	const path = rec.args?.path ? ` in ${shortPath(componentCwd(value), rec.args.path)}` : "";
+	return `"${pattern}"${path}`;
+}
+
+function listInspectionTarget(value: unknown): string {
+	const rec = toolComponentRecord(value);
+	return shortPath(componentCwd(value), rec.args?.path ?? ".");
+}
+
+function readInspectionStatus(value: unknown): string {
+	const rec = toolComponentRecord(value);
+	if (!rec.result) return "Reading...";
+	if (rec.result?.isError) return "failed";
+	const text = componentTextContent(value);
+	const lines = text.length === 0 ? 0 : text.split("\n").length;
+	const suffix = rec.result?.details?.truncation?.truncated ? " (truncated)" : "";
+	return `${plural(lines, "line")} loaded${suffix}`;
+}
+
+function grepInspectionStatus(value: unknown): string {
+	const rec = toolComponentRecord(value);
+	if (!rec.result) return "Searching...";
+	if (rec.result?.isError) return "failed";
+	const text = componentTextContent(value).trim();
+	if (!text || /^No matches found\b/i.test(text)) return "no matches";
+	const lines = textDataLines(text);
+	let status = plural(lines.length, "match");
+	const files = uniqueLeadingGrepFiles(text, readOnlyToolGroupLimit());
+	if (files.length > 1) status += ` in ${compactList(files, readOnlyToolGroupLimit())}`;
+	if (rec.result?.details?.truncation?.truncated) status += " (truncated)";
+	return status;
+}
+
+function findInspectionStatus(value: unknown): string {
+	const rec = toolComponentRecord(value);
+	if (!rec.result) return "Finding...";
+	if (rec.result?.isError) return "failed";
+	const text = componentTextContent(value).trim();
+	if (!text || /^No files found\b/i.test(text)) return "no files";
+	const items = textDataLines(text);
+	let status = plural(items.length, "file");
+	if (items.length > 0) status += `: ${compactList(items, readOnlyToolGroupLimit())}`;
+	if (rec.result?.details?.truncation?.truncated) status += " (truncated)";
+	return status;
+}
+
+function listInspectionStatus(value: unknown): string {
+	const rec = toolComponentRecord(value);
+	if (!rec.result) return "Listing...";
+	if (rec.result?.isError) return "failed";
+	const text = componentTextContent(value).trim();
+	if (!text || /^empty directory\b/i.test(text)) return "empty directory";
+	const items = textDataLines(text);
+	let status = plural(items.length, "entry");
+	if (items.length > 0) status += `: ${compactList(items, readOnlyToolGroupLimit())}`;
+	return status;
+}
+
+function bashReadInspectionTarget(value: unknown): string {
+	const info = bashReadDisplayInfo(value);
+	if (!info) return "";
+	const range = info.rangeLabel ? ` (${info.rangeLabel})` : "";
+	return `${shortPath(componentCwd(value), info.path)}${range}`;
+}
+
+function bashReadInspectionStatus(value: unknown): string {
+	const rec = toolComponentRecord(value);
+	if (!rec.result) return "Reading...";
+	if (rec.result?.isError) return "failed";
+	const count = componentTextContent(value).split("\n").filter((line) => line.trim().length > 0).length;
+	return `${plural(count, "line")} read`;
+}
+
+function summarizeReadOnlyInspectionTool(value: unknown): string {
+	const rec = toolComponentRecord(value);
+	if (rec.toolName === "read") return `Read ${readInspectionTarget(value)} — ${readInspectionStatus(value)}`;
+	if (rec.toolName === "grep") return `Grep ${grepInspectionTarget(value)} — ${grepInspectionStatus(value)}`;
+	if (rec.toolName === "find") return `Find ${findInspectionTarget(value)} — ${findInspectionStatus(value)}`;
+	if (rec.toolName === "ls") return `List ${listInspectionTarget(value)} — ${listInspectionStatus(value)}`;
+	return `Read ${bashReadInspectionTarget(value)} — ${bashReadInspectionStatus(value)}`;
+}
+
+function renderInspectionGroup(group: unknown[], width: number): string[] {
+	syncToolBackgroundMode();
+	const limit = readOnlyToolGroupLimit();
+	const shown = group.slice(0, limit);
+	const remaining = group.length - shown.length;
+	const core: string[] = [` ${WRAP_MARK}● Inspect ${plural(group.length, "tool use")}`];
+	for (let index = 0; index < shown.length; index++) {
+		const isLast = index === shown.length - 1 && remaining === 0;
+		const branch = isLast ? "└─" : "├─";
+		core.push(` ${TOOL_RULE}${branch}${TRANSPARENT_RESET} ${WRAP_MARK}${summarizeReadOnlyInspectionTool(shown[index])}`);
+	}
+	if (remaining > 0) {
+		core.push(` ${TOOL_RULE}└─${TRANSPARENT_RESET} ${WRAP_MARK}… ${remaining} more inspection${remaining === 1 ? "" : "s"}`);
+	}
+	const renderedCore = core.flatMap((line) => wrapMarkedLine(line, width)).map((line) => padToWidth(line, width));
+	if (toolBackgroundMode === "outlines") return [" ".repeat(width), borderLine(width), ...renderedCore, borderLine(width)];
+	if (toolBackgroundMode === "transparent") return [" ".repeat(width), ...renderedCore];
+	return renderedCore;
+}
+
+function renderWithGroupedReadOnlyInspectionTools(container: any, width: number): string[] | null {
+	const children = Array.isArray(container?.children) ? container.children : null;
+	if (!children || !hasConsecutiveReadOnlyInspectionToolChildren(children)) return null;
+
+	const rendered: string[] = [];
+	let group: unknown[] = [];
+	let previousWasBash = false;
+	const flushGroup = () => {
+		if (group.length === 0) return;
+		if (group.length === 1) {
+			const child = group[0] as any;
+			const currentIsBash = isBashToolExecution(child);
+			const childLines = typeof child?.render === "function" ? child.render(width) : [];
+			rendered.push(...(currentIsBash && previousWasBash ? dropLeadingSpacerLine(childLines) : childLines));
+			previousWasBash = currentIsBash;
+		} else {
+			rendered.push(...renderInspectionGroup(group, width));
+			previousWasBash = false;
+		}
+		group = [];
+	};
+
+	for (const child of children) {
+		if (isReadOnlyInspectionToolExecution(child)) {
+			group.push(child);
+			continue;
+		}
+		flushGroup();
+		const currentIsBash = isBashToolExecution(child);
+		const childLines = typeof child?.render === "function" ? child.render(width) : [];
+		rendered.push(...(currentIsBash && previousWasBash ? dropLeadingSpacerLine(childLines) : childLines));
+		previousWasBash = currentIsBash;
+	}
+	flushGroup();
+	return rendered;
+}
+
 function hasConsecutiveBashToolChildren(children: unknown[]): boolean {
 	let previousWasBash = false;
 	for (const child of children) {
@@ -402,6 +651,8 @@ function patchGlobalToolBorders(): void {
 	const originalRender = proto.render;
 	proto.render = function patchedContainerRender(width: number): string[] {
 		if (!isToolExecutionLike(this)) {
+			const grouped = renderWithGroupedReadOnlyInspectionTools(this, width);
+			if (grouped) return grouped;
 			const stacked = renderWithStackedConsecutiveBash(this, width);
 			if (stacked) return stacked;
 		}

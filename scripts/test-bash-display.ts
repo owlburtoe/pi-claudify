@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 
 import { ToolExecutionComponent } from "@mariozechner/pi-coding-agent";
+import { Container } from "@mariozechner/pi-tui";
 import { initTheme } from "../node_modules/@mariozechner/pi-coding-agent/dist/modes/interactive/theme/theme.js";
 
 import extension, { classifyBashCommandForDisplay } from "../extensions/index.ts";
@@ -94,6 +95,24 @@ class FakePi {
 	}
 }
 
+function completedTool(pi: FakePi, name: string, id: string, args: any, text: string, details: any = {}): ToolExecutionComponent {
+	const tool = pi.tools.get(name);
+	assert.ok(tool, `${name} tool registered`);
+	const component = new ToolExecutionComponent(
+		name,
+		id,
+		args,
+		{ showImages: false },
+		tool,
+		{ requestRender() {}, previousLines: [] } as any,
+		process.cwd(),
+	);
+	component.markExecutionStarted();
+	component.setArgsComplete();
+	component.updateResult({ content: [{ type: "text", text }], details, isError: false } as any, false);
+	return component;
+}
+
 initTheme("dark", false);
 const pi = new FakePi();
 extension(pi as any);
@@ -122,4 +141,23 @@ assert.match(rendered, /└─ Read 2 lines/);
 assert.doesNotMatch(rendered, /Bash nl -ba/);
 assert.doesNotMatch(rendered, /Ctrl\+O/);
 
+
+const groupedContainer = new Container();
+groupedContainer.addChild(completedTool(pi, "read", "read-one", { path: "src/one.ts" }, "alpha\nbeta"));
+groupedContainer.addChild(completedTool(pi, "grep", "grep-one", { pattern: "alpha", path: "src" }, "one.ts:1: alpha\ntwo.ts:2: alpha"));
+groupedContainer.addChild(completedTool(pi, "find", "find-one", { pattern: "*.ts", path: "src" }, "one.ts\ntwo.ts\nthree.ts"));
+groupedContainer.addChild(completedTool(pi, "read", "read-two", { path: "src/two.ts", offset: 1, limit: 20 }, "gamma"));
+groupedContainer.addChild(completedTool(pi, "grep", "grep-two", { pattern: "gamma", path: "src/two.ts" }, "two.ts:1: gamma"));
+groupedContainer.addChild(completedTool(pi, "read", "read-three", { path: "src/three.ts" }, "delta"));
+groupedContainer.addChild(completedTool(pi, "write", "write-one", { path: "src/write.ts", content: "next\n" }, "ok", { _type: "new", lines: 2, filePath: "src/write.ts" }));
+
+const groupedRendered = groupedContainer.render(120).map((line) => line.replace(/\x1b\[[0-9;]*m/g, "")).join("\n");
+assert.match(groupedRendered, /● Inspect 6 tool uses/);
+assert.match(groupedRendered, /├─ Read src\/one\.ts — 2 lines loaded/);
+assert.match(groupedRendered, /├─ Grep "alpha" in src — 2 matches/);
+assert.match(groupedRendered, /├─ Find "\*\.ts" in src — 3 files/);
+assert.match(groupedRendered, /└─ … 1 more inspection/);
+assert.doesNotMatch(groupedRendered, /^● Read src\/one\.ts/m);
+assert.doesNotMatch(groupedRendered, /^● Grep "alpha"/m);
+assert.match(groupedRendered, /● Create src\/write\.ts/);
 console.log("bash display tests passed");

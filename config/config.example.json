@@ -9,6 +9,8 @@
   "bashCollapsedLines": 10,
   "bashStackConsecutive": true,
   "bashSemanticDisplay": true,
+  "readOnlyToolGrouping": true,
+  "readOnlyToolGroupLimit": 5,
   "diffCollapsedLines": 24,
   "showTruncationHints": false,
   "themeAdaptive": true,
