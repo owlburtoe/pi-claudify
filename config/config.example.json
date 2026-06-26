@@ -23,7 +23,5 @@
   "assistantPrefix": "●",
   "thinkingPrefix": "✻",
   "messageSpacing": "comfortable",
-  "workingTipEnabled": true,
-  "workingTipText": "Run /install-github-app to tag @claude right from your GitHub issues and PRs",
   "hiddenThinkingLabel": "Pondering..."
 }

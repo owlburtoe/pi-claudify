@@ -11,7 +11,7 @@ The current Claude Code screenshot reads as a sparse transcript rather than a bo
 - Assistant text rows start with a white `●`, then body text. Wrapped lines align under the body text, not under the dot.
 - Tool rows start with a status dot (`●` green when allowed/successful), a bold tool label, and compact arguments. Wrapped command arguments indent under the argument body.
 - Tool results hang off a single branch (`└─ ...`) with muted continuation lines.
-- Active work uses an orange star-like spinner row: `✶ Marching on the Black Gate… (3m 21s · ↓ 8.4k tokens)`, plus a subordinate `└─ Tip: ...` line.
+- Active work uses an orange star-like spinner row: `✶ Marching on the Black Gate… (3m 21s · ↓ 8.4k tokens)`.
 - The transcript avoids box chrome around messages; spacing and indentation carry the hierarchy.
 
 This repo already implements much of that grammar in `extensions/index.ts`: `DottedParagraph`, `ThinkingParagraph`, `patchAssistantMessages()`, tool status dots, branch connectors, and the spinner extension. The first slice should refine those surfaces rather than add new UI regions.
@@ -25,7 +25,7 @@ This repo already implements much of that grammar in `extensions/index.ts`: `Dot
    - no accidental heading marker artifacts.
 2. Make thinking/working rows match the same transcript grammar:
    - thinking content remains dim/italic and does not leak presentation text into model context,
-   - active working text can optionally render a Claude-like subordinate tip line.
+   - active working text stays focused on the spinner/status line only.
 3. Keep behavior configurable so users can return to the current package style if preferred.
 
 ## Non-goals
@@ -48,8 +48,6 @@ messageStyle?: "classic" | "claude";
 assistantPrefix?: string;
 thinkingPrefix?: string;
 messageSpacing?: "compact" | "comfortable";
-workingTipEnabled?: boolean;
-workingTipText?: string;
 ```
 
 Defaults:
@@ -58,8 +56,6 @@ Defaults:
 - `assistantPrefix: "●"`
 - `thinkingPrefix: "✻"`
 - `messageSpacing: "comfortable"`
-- `workingTipEnabled: true`
-- `workingTipText` chosen from a small local list of Claude-like tips, or a stable default.
 
 ### Commands
 
@@ -73,8 +69,6 @@ Add `/cc-message` with completions:
 /cc-message spacing comfortable
 /cc-message assistant-prefix <glyph>
 /cc-message thinking-prefix <glyph>
-/cc-message tip on|off
-/cc-message tip text <text>
 /cc-message reset
 ```
 
@@ -103,16 +97,15 @@ Keep `ThinkingParagraph` dim/italic, but make the prefix configurable through th
 
 If Pi’s hidden thinking API is available in the current runtime, apply a default Claude-ish hidden label during `session_start`, for example `Pondering…`, but keep this secondary to the visible transcript work.
 
-### Active working tip row
+### Active working row
 
-The screenshot’s active row has a subordinate tip:
+Keep the active row to the spinner and status text only:
 
 ```text
 ✶ Marching on the Black Gate… (3m 21s · ↓ 8.4k tokens)
-  └─ Tip: Run /install-github-app ...
 ```
 
-Implementation should first verify whether `ctx.ui.setWorkingMessage()` and the patched `Loader` safely support multi-line messages. If multi-line working messages render cleanly, append a muted branch tip when `workingTipEnabled` is true. If not, defer the tip row and keep this slice focused on assistant/thinking paragraphs.
+Avoid adding subordinate helper copy beneath the working message so the loader stays compact and does not repeat hard-coded guidance.
 
 ## Implementation touchpoints
 
@@ -124,7 +117,7 @@ Implementation should first verify whether `ctx.ui.setWorkingMessage()` and the 
   - `registerThinkingLabels()` context-stripping review.
   - optional `ctx.ui.setHiddenThinkingLabel()` application on `session_start`.
 - `extensions/spinner.ts`
-  - optional multi-line working tip support if feasible.
+  - spinner/status message polishing only; no subordinate helper copy.
 - `README.md`
   - document `/cc-message` and settings.
 - `config/config.example.json`
@@ -140,7 +133,7 @@ Implementation should first verify whether `ctx.ui.setWorkingMessage()` and the 
 3. Manually launch Pi with the extension and compare against the screenshot:
    - assistant message wrap alignment,
    - thinking row prefix/color,
-   - active spinner row,
+   - active spinner row without subordinate helper copy,
    - no duplicated `Worked for` lines,
    - presentation artifacts stripped from future model context.
 4. Toggle `/cc-message style classic` and confirm the previous behavior remains available.
@@ -148,5 +141,4 @@ Implementation should first verify whether `ctx.ui.setWorkingMessage()` and the 
 ## Open questions
 
 - Should `messageStyle: "claude"` become the package default immediately, or should it ship as opt-in for one release?
-- Should the working tip row use a fixed tip, a rotating list, or be disabled by default until multi-line loader rendering is proven stable?
 - Should `toolBackground` default move toward `transparent` to better match the screenshot, or remain controlled by `/cc-tools` outside this slice?

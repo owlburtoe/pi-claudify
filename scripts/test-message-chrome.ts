@@ -37,18 +37,13 @@ assert.deepEqual(resolveMessageChromeSettings({
 	assistantPrefix: "",
 	thinkingPrefix: "thinking\u001b[31m",
 	messageSpacing: "wide",
-	workingTipText: "  Use /cc-message ",
 }), {
 	messageStyle: "classic",
 	assistantPrefix: "●",
 	thinkingPrefix: "thinking",
 	messageSpacing: "comfortable",
-	workingTipEnabled: false,
-	workingTipText: "Use /cc-message",
 	hiddenThinkingLabel: "Pondering...",
 });
-
-assert.equal(resolveMessageChromeSettings({ messageStyle: "classic", workingTipEnabled: true }).workingTipEnabled, true);
 
 assert.deepEqual(formatTranscriptLines(["Alpha", "Beta"], {
 	prefix: "🚀",

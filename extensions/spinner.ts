@@ -3,8 +3,6 @@ import { existsSync, readFileSync } from "node:fs";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Loader } from "@mariozechner/pi-tui";
 
-import { resolveMessageChromeSettings } from "./message-chrome.ts";
-
 // ---------------------------------------------------------------------------
 // Patch built-in Loader with Claude/OpenBrawd-style glyphs.
 // Keep animation cadence constant so the spinner doesn't appear to slow down
@@ -28,8 +26,6 @@ interface SpinnerSettings {
 	verbColor: string;
 	statusColor: string;
 	verbs: readonly string[];
-	workingTipEnabled: boolean;
-	workingTipText: string;
 }
 
 let _spinnerSettingsCache: { value: SpinnerSettings; expires: number } | null = null;
@@ -100,9 +96,6 @@ function readSpinnerSettings(): SpinnerSettings {
 	let statusColor = "muted";
 	let customVerbs: string[] | null = null;
 	let verbMode: SpinnerVerbMode = "append";
-	let messageStyle: string | undefined;
-	let workingTipEnabled: boolean | undefined;
-	let workingTipText: string | undefined;
 	const paths = [`${process.cwd()}/.pi/settings.json`, `${process.env.HOME ?? ""}/.pi/settings.json`];
 	for (const p of paths) {
 		try {
@@ -115,20 +108,14 @@ function readSpinnerSettings(): SpinnerSettings {
 				if (typeof raw.spinnerStatusColor === "string" && raw.spinnerStatusColor.length > 0) statusColor = raw.spinnerStatusColor;
 				if (raw.spinnerVerbMode === "append" || raw.spinnerVerbMode === "replace") verbMode = raw.spinnerVerbMode;
 				if (Array.isArray(raw.spinnerVerbs)) customVerbs = sanitizeSpinnerVerbs(raw.spinnerVerbs);
-				if (typeof raw.messageStyle === "string") messageStyle = raw.messageStyle;
-				if (typeof raw.workingTipEnabled === "boolean") workingTipEnabled = raw.workingTipEnabled;
-				if (typeof raw.workingTipText === "string") workingTipText = raw.workingTipText;
 			}
 		} catch { /* ignore */ }
 	}
-	const messageChrome = resolveMessageChromeSettings({ messageStyle, workingTipEnabled, workingTipText });
 	const value: SpinnerSettings = {
 		adaptive,
 		verbColor,
 		statusColor,
 		verbs: resolveSpinnerVerbs(customVerbs, verbMode),
-		workingTipEnabled: messageChrome.workingTipEnabled,
-		workingTipText: messageChrome.workingTipText,
 	};
 	_spinnerSettingsCache = { value, expires: now + SPINNER_SETTINGS_TTL_MS };
 	return value;
@@ -566,10 +553,6 @@ export default function (pi: ExtensionAPI) {
 		let message = `${CLAUDE_ORANGE}${currentVerb}…${RESET}`;
 		if (statusParts.length > 0) {
 			message += statusText(` (${statusParts.join(" · ")})`);
-		}
-		const { workingTipEnabled, workingTipText } = readSpinnerSettings();
-		if (workingTipEnabled && workingTipText) {
-			message += `\n${STATUS_DIM}  └─ Tip: ${workingTipText}${RESET}`;
 		}
 		return message;
 	}
