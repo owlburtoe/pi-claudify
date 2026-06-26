@@ -129,10 +129,6 @@ interface SettingsFile {
 	thinkingPrefix?: string;
 	/** Blank-line normalization in assistant/thinking transcript blocks. */
 	messageSpacing?: MessageSpacing;
-	/** Whether the active working spinner may show a subordinate Claude-style tip line. */
-	workingTipEnabled?: boolean;
-	/** Custom subordinate tip line text for the active working spinner. */
-	workingTipText?: string;
 	/** Label shown when thinking blocks are hidden by the Pi UI. */
 	hiddenThinkingLabel?: string;
 }
@@ -4498,7 +4494,7 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
-	const MESSAGE_COMMANDS = ["style", "spacing", "assistant-prefix", "thinking-prefix", "tip", "hidden-thinking-label", "reset", "status"] as const;
+	const MESSAGE_COMMANDS = ["style", "spacing", "assistant-prefix", "thinking-prefix", "hidden-thinking-label", "reset", "status"] as const;
 	pi.registerCommand("cc-message", {
 		description: "Configure Claude-style assistant/thinking transcript chrome",
 		getArgumentCompletions(prefix: string) {
@@ -4515,7 +4511,6 @@ export default function (pi: ExtensionAPI) {
 							: c === "spacing" ? "Set blank-line rhythm: compact or comfortable"
 							: c === "assistant-prefix" ? "Set assistant paragraph prefix glyph/text"
 							: c === "thinking-prefix" ? "Set visible thinking prefix glyph/text"
-							: c === "tip" ? "Enable, disable, or customize active working tip line"
 							: c === "hidden-thinking-label" ? "Set label shown when thinking is hidden"
 							: c === "reset" ? "Reset message chrome settings"
 							: "Show current message chrome settings",
@@ -4533,12 +4528,6 @@ export default function (pi: ExtensionAPI) {
 					.filter((v) => v.startsWith(valuePrefix))
 					.map((v) => ({ value: `spacing ${v}`, label: v, description: v === "comfortable" ? "Preserve one blank line between paragraphs" : "Remove blank lines inside assistant/thinking blocks" }));
 			}
-			if (parts[0] === "tip") {
-				const valuePrefix = (parts[1] ?? "").toLowerCase();
-				return ["on", "off", "text", "reset"]
-					.filter((v) => v.startsWith(valuePrefix))
-					.map((v) => ({ value: `tip ${v}`, label: v, description: v === "text" ? "Set custom active working tip text" : `${v} working tip line` }));
-			}
 			return [];
 		},
 		async handler(args: string, ctx: any) {
@@ -4553,8 +4542,6 @@ export default function (pi: ExtensionAPI) {
 					`Assistant prefix: ${current.assistantPrefix}`,
 					`Thinking prefix: ${current.thinkingPrefix}`,
 					`Spacing: ${current.messageSpacing}`,
-					`Working tip: ${current.workingTipEnabled ? "on" : "off"}`,
-					`Tip text: ${current.workingTipText}`,
 					`Hidden thinking label: ${current.hiddenThinkingLabel}`,
 				].join("\n"), "info");
 			};
@@ -4565,7 +4552,7 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			if (sub === "reset") {
-				for (const key of ["messageStyle", "assistantPrefix", "thinkingPrefix", "messageSpacing", "workingTipEnabled", "workingTipText", "hiddenThinkingLabel"]) {
+				for (const key of ["messageStyle", "assistantPrefix", "thinkingPrefix", "messageSpacing", "hiddenThinkingLabel"]) {
 					writeSettingsKey(key, undefined);
 				}
 				bustSpinnerSettingsCache();
@@ -4581,8 +4568,6 @@ export default function (pi: ExtensionAPI) {
 					return;
 				}
 				writeSettingsKey("messageStyle", value);
-				writeSettingsKey("workingTipEnabled", value === "classic" ? false : undefined);
-				bustSpinnerSettingsCache();
 				if (ctx.hasUI) ctx.ui.notify(`Message style → ${value}`, "info");
 				return;
 			}
@@ -4607,33 +4592,6 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 
-			if (sub === "tip") {
-				const action = (parts[1] ?? "").toLowerCase();
-				if (action === "on" || action === "off") {
-					writeSettingsKey("workingTipEnabled", action === "on");
-					bustSpinnerSettingsCache();
-					if (ctx.hasUI) ctx.ui.notify(`Working tip → ${action}`, "info");
-					return;
-				}
-				if (action === "reset") {
-					writeSettingsKey("workingTipEnabled", undefined);
-					writeSettingsKey("workingTipText", undefined);
-					bustSpinnerSettingsCache();
-					if (ctx.hasUI) ctx.ui.notify("Working tip reset", "info");
-					return;
-				}
-				if (action === "text") {
-					const textArg = rawArgs.match(/^tip\s+text(?:\s+(.+))?$/i)?.[1] ?? "";
-					const value = resolveMessageChromeSettings({ workingTipText: textArg }).workingTipText;
-					writeSettingsKey("workingTipText", value);
-					bustSpinnerSettingsCache();
-					if (ctx.hasUI) ctx.ui.notify(`Working tip text → ${value}`, "info");
-					return;
-				}
-				if (ctx.hasUI) ctx.ui.notify("Usage: /cc-message tip on|off|reset|text <text>", "error");
-				return;
-			}
-
 			if (sub === "hidden-thinking-label") {
 				const textArg = rawArgs.match(/^hidden-thinking-label(?:\s+(.+))?$/i)?.[1] ?? "";
 				const value = resolveMessageChromeSettings({ hiddenThinkingLabel: textArg }).hiddenThinkingLabel;
@@ -4643,7 +4601,7 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 
-			if (ctx.hasUI) ctx.ui.notify("Usage: /cc-message style|spacing|assistant-prefix|thinking-prefix|tip|hidden-thinking-label|reset|status", "error");
+			if (ctx.hasUI) ctx.ui.notify("Usage: /cc-message style|spacing|assistant-prefix|thinking-prefix|hidden-thinking-label|reset|status", "error");
 		},
 	});
 

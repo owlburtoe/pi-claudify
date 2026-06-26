@@ -6,8 +6,6 @@ export interface MessageChromeInput {
 	assistantPrefix?: unknown;
 	thinkingPrefix?: unknown;
 	messageSpacing?: unknown;
-	workingTipEnabled?: unknown;
-	workingTipText?: unknown;
 	hiddenThinkingLabel?: unknown;
 }
 
@@ -16,8 +14,6 @@ export interface MessageChromeSettings {
 	assistantPrefix: string;
 	thinkingPrefix: string;
 	messageSpacing: MessageSpacing;
-	workingTipEnabled: boolean;
-	workingTipText: string;
 	hiddenThinkingLabel: string;
 }
 
@@ -28,7 +24,6 @@ export interface TranscriptLineOptions {
 	visibleWidth?: (text: string) => number;
 }
 
-export const DEFAULT_WORKING_TIP_TEXT = "Run /install-github-app to tag @claude right from your GitHub issues and PRs";
 export const DEFAULT_HIDDEN_THINKING_LABEL = "Pondering...";
 
 const DEFAULT_MESSAGE_CHROME: MessageChromeSettings = {
@@ -36,8 +31,6 @@ const DEFAULT_MESSAGE_CHROME: MessageChromeSettings = {
 	assistantPrefix: "●",
 	thinkingPrefix: "✻",
 	messageSpacing: "comfortable",
-	workingTipEnabled: true,
-	workingTipText: DEFAULT_WORKING_TIP_TEXT,
 	hiddenThinkingLabel: DEFAULT_HIDDEN_THINKING_LABEL,
 };
 
@@ -45,7 +38,6 @@ const ANSI_ESCAPE_SEQUENCE_RE = /\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x07]*
 const ANSI_SGR_RE = /\x1b\[[0-9;]*m/g;
 const CONTROL_CHARS_RE = /[\u0000-\u001F\u007F-\u009F]/g;
 const MAX_PREFIX_GRAPHEMES = 8;
-const MAX_TIP_GRAPHEMES = 160;
 const MAX_LABEL_GRAPHEMES = 80;
 
 function stripAnsi(text: string): string {
@@ -81,14 +73,11 @@ export function sanitizeMessagePrefix(value: unknown, fallback: string): string 
 export function resolveMessageChromeSettings(input: MessageChromeInput = {}): MessageChromeSettings {
 	const messageStyle: MessageStyle = input.messageStyle === "classic" ? "classic" : "claude";
 	const messageSpacing: MessageSpacing = input.messageSpacing === "compact" ? "compact" : "comfortable";
-	const defaultWorkingTipEnabled = messageStyle === "classic" ? false : DEFAULT_MESSAGE_CHROME.workingTipEnabled;
 	return {
 		messageStyle,
 		assistantPrefix: sanitizeMessagePrefix(input.assistantPrefix, DEFAULT_MESSAGE_CHROME.assistantPrefix),
 		thinkingPrefix: sanitizeMessagePrefix(input.thinkingPrefix, DEFAULT_MESSAGE_CHROME.thinkingPrefix),
 		messageSpacing,
-		workingTipEnabled: typeof input.workingTipEnabled === "boolean" ? input.workingTipEnabled : defaultWorkingTipEnabled,
-		workingTipText: sanitizeTextSetting(input.workingTipText, DEFAULT_MESSAGE_CHROME.workingTipText, MAX_TIP_GRAPHEMES),
 		hiddenThinkingLabel: sanitizeTextSetting(input.hiddenThinkingLabel, DEFAULT_MESSAGE_CHROME.hiddenThinkingLabel, MAX_LABEL_GRAPHEMES),
 	};
 }

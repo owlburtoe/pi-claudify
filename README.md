@@ -13,7 +13,7 @@ Claude Code inspired tool rendering for Pi — Shiki-powered diffs, status dots,
 - **Diff stat bar** with colored add/remove summary and hunk metadata
 - **Progressive collapsed diff hints** that shorten on narrow terminals
 - **Thinking labels** during streaming and final messages, with context sanitization
-- **Claude-style transcript grammar controls** for assistant/thinking prefixes, message spacing, hidden thinking labels, and active working tips
+- **Claude-style transcript grammar controls** for assistant/thinking prefixes, message spacing, and hidden thinking labels
 - **MCP-aware rendering** with hidden, summary, and preview modes
 - **Configurable output modes** for read, search, bash, and MCP results
 - **Transparent tool backgrounds** in `transparent` or `border` mode
@@ -48,8 +48,6 @@ Set in `.pi/settings.json` or `~/.pi/settings.json`:
   "assistantPrefix": "●",
   "thinkingPrefix": "✻",
   "messageSpacing": "comfortable",
-  "workingTipEnabled": true,
-  "workingTipText": "Run /install-github-app to tag @claude right from your GitHub issues and PRs",
   "hiddenThinkingLabel": "Pondering..."
 }
 ```
@@ -116,13 +114,10 @@ Color selections are persisted as `spinnerColor` / `spinnerStatusColor` in `~/.p
 /cc-message assistant-prefix ●           # set assistant paragraph prefix
 /cc-message thinking-prefix ✻            # set visible thinking prefix
 /cc-message hidden-thinking-label Pondering...
-/cc-message tip on                       # show active working tip line
-/cc-message tip off                      # hide active working tip line
-/cc-message tip text Run /help for tips   # set active working tip text
 /cc-message reset                        # restore message chrome defaults
 ```
 
-`messageStyle: "claude"` trims leading/trailing blank render lines, collapses paragraph gaps, and aligns wrapped assistant/thinking lines under the message body, matching Claude Code's sparse transcript grammar. `messageStyle: "classic"` keeps the previous package behavior. The active working tip is rendered as a subordinate `└─ Tip:` line under the spinner when supported by the Pi loader.
+`messageStyle: "claude"` trims leading/trailing blank render lines, collapses paragraph gaps, and aligns wrapped assistant/thinking lines under the message body, matching Claude Code's sparse transcript grammar. `messageStyle: "classic"` keeps the previous package behavior.
 
 ### Tool background modes
 
