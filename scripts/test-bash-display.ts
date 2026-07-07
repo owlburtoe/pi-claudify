@@ -136,8 +136,8 @@ component.updateResult({
 } as any, false);
 
 const rendered = component.render(120).map((line) => line.replace(/\x1b\[[0-9;]*m/g, "")).join("\n");
-assert.match(rendered, /● Read apps\/backend\/src\/lib\/notification-unsubscribe\.ts \(lines 1-200\)/);
-assert.match(rendered, /└─ Read 2 lines/);
+assert.match(rendered, /⏺ Read\(apps\/backend\/src\/lib\/notification-unsubscribe\.ts \(lines 1-200\)\)/);
+assert.match(rendered, /⎿  Read 2 lines/);
 assert.doesNotMatch(rendered, /Bash nl -ba/);
 assert.doesNotMatch(rendered, /Ctrl\+O/);
 
@@ -152,12 +152,12 @@ groupedContainer.addChild(completedTool(pi, "read", "read-three", { path: "src/t
 groupedContainer.addChild(completedTool(pi, "write", "write-one", { path: "src/write.ts", content: "next\n" }, "ok", { _type: "new", lines: 2, filePath: "src/write.ts" }));
 
 const groupedRendered = groupedContainer.render(120).map((line) => line.replace(/\x1b\[[0-9;]*m/g, "")).join("\n");
-assert.match(groupedRendered, /● Inspect 6 tool uses/);
-assert.match(groupedRendered, /├─ Read src\/one\.ts — 2 lines loaded/);
-assert.match(groupedRendered, /├─ Grep "alpha" in src — 2 matches/);
-assert.match(groupedRendered, /├─ Find "\*\.ts" in src — 3 files/);
-assert.match(groupedRendered, /└─ … 1 more inspection/);
-assert.doesNotMatch(groupedRendered, /^● Read src\/one\.ts/m);
-assert.doesNotMatch(groupedRendered, /^● Grep "alpha"/m);
-assert.match(groupedRendered, /● Create src\/write\.ts/);
+assert.match(groupedRendered, /⏺ Inspect\(6 tool uses\)/);
+assert.match(groupedRendered, /⎿  Read src\/one\.ts — 2 lines loaded/);
+assert.match(groupedRendered, /Grep "alpha" in src — 2 matches/);
+assert.match(groupedRendered, /Find "\*\.ts" in src — 3 files/);
+assert.match(groupedRendered, /… 1 more inspection/);
+assert.doesNotMatch(groupedRendered, /^⏺ Read\(src\/one\.ts\)/m);
+assert.doesNotMatch(groupedRendered, /^⏺ Grep\("alpha"/m);
+assert.match(groupedRendered, /⏺ Create\(src\/write\.ts/);
 console.log("bash display tests passed");

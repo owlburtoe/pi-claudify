@@ -71,7 +71,12 @@ const WRAP_MARK = "\uE000";
 const KITTY_IMAGE_PREFIX = "\x1b_G";
 const ITERM2_IMAGE_PREFIX = "\x1b]1337;File=";
 
-let toolBackgroundMode: "default" | "transparent" | "outlines" = "outlines";
+let toolBackgroundMode: "default" | "transparent" | "outlines" = "transparent";
+
+const CLAUDE_TOOL_GLYPH = "⏺";
+const CLAUDE_RESULT_GLYPH = "⎿";
+const CLAUDE_RESULT_PREFIX = `  ${CLAUDE_RESULT_GLYPH}  `;
+const CLAUDE_RESULT_CONTINUATION = " ".repeat(CLAUDE_RESULT_PREFIX.length);
 
 type SpinnerVerbMode = "append" | "replace";
 
@@ -269,7 +274,7 @@ function syncToolBackgroundMode(): void {
 	const settings = readSettings();
 	// Backward compat: "border" was renamed to "outlines"
 	const raw = settings.toolBackground === "border" ? "outlines" : settings.toolBackground;
-	toolBackgroundMode = raw ?? "outlines";
+	toolBackgroundMode = raw ?? "transparent";
 }
 
 function setThemeBg(theme: unknown, key: string, value: string): void {
@@ -534,14 +539,14 @@ function renderInspectionGroup(group: unknown[], width: number): string[] {
 	const limit = readOnlyToolGroupLimit();
 	const shown = group.slice(0, limit);
 	const remaining = group.length - shown.length;
-	const core: string[] = [` ${WRAP_MARK}● Inspect ${plural(group.length, "tool use")}`];
+	const core: string[] = [` ${WRAP_MARK}${CLAUDE_TOOL_GLYPH} Inspect(${plural(group.length, "tool use")})`];
 	for (let index = 0; index < shown.length; index++) {
-		const isLast = index === shown.length - 1 && remaining === 0;
-		const branch = isLast ? "└─" : "├─";
-		core.push(` ${TOOL_RULE}${branch}${TRANSPARENT_RESET} ${WRAP_MARK}${summarizeReadOnlyInspectionTool(shown[index])}`);
+		const prefix = index === 0 ? `${TOOL_RULE}${CLAUDE_RESULT_PREFIX}${TRANSPARENT_RESET}` : CLAUDE_RESULT_CONTINUATION;
+		core.push(`${prefix}${WRAP_MARK}${summarizeReadOnlyInspectionTool(shown[index])}`);
 	}
 	if (remaining > 0) {
-		core.push(` ${TOOL_RULE}└─${TRANSPARENT_RESET} ${WRAP_MARK}… ${remaining} more inspection${remaining === 1 ? "" : "s"}`);
+		const prefix = shown.length === 0 ? `${TOOL_RULE}${CLAUDE_RESULT_PREFIX}${TRANSPARENT_RESET}` : CLAUDE_RESULT_CONTINUATION;
+		core.push(`${prefix}${WRAP_MARK}… ${remaining} more inspection${remaining === 1 ? "" : "s"}`);
 	}
 	const renderedCore = core.flatMap((line) => wrapMarkedLine(line, width)).map((line) => padToWidth(line, width));
 	if (toolBackgroundMode === "outlines") return [" ".repeat(width), borderLine(width), ...renderedCore, borderLine(width)];
@@ -1247,7 +1252,7 @@ function toolHeader(tool: string, summary: string, theme: Theme, prefix = ""): s
 	applyThemePaletteIfNeeded(theme);
 	const label = theme.fg("toolTitle", theme.bold(tool));
 	if (!summary) return `${prefix}${label}`;
-	return `${prefix}${label} ${WRAP_MARK}${theme.fg("accent", summary)}`;
+	return `${prefix}${label}${theme.fg("muted", "(")}${WRAP_MARK}${theme.fg("accent", summary)}${theme.fg("muted", ")")}`;
 }
 
 function setToolStatus(ctx: any, status: "pending" | "success" | "error"): void {
@@ -1311,8 +1316,8 @@ function getWriteWasNewFile(ctx: any, cwd: string, filePath: string, reveal = sh
 
 function toolStatusDot(ctx: any, theme: Theme): string {
 	const status = ctx.state?._toolStatus as "pending" | "success" | "error" | undefined;
-	if (status === "success") return `${theme.fg("success", "●")} `;
-	if (status === "error") return `${theme.fg("error", "●")} `;
+	if (status === "error") return `${theme.fg("error", CLAUDE_TOOL_GLYPH)} `;
+	if (status === "success") return `${theme.fg("accent", CLAUDE_TOOL_GLYPH)} `;
 	return `${blinkDot(ctx, theme)} `;
 }
 
@@ -1320,13 +1325,12 @@ function toolStatusDot(ctx: any, theme: Theme): string {
 // Branch connector — visual tree from header to output
 // ---------------------------------------------------------------------------
 
-function branchIndent(text: string, continued = false): string {
-	const prefix = continued ? `${TOOL_RULE}│${TRANSPARENT_RESET}  ` : "   ";
-	return `${prefix}${WRAP_MARK}${text}`;
+function branchIndent(text: string, _continued = false): string {
+	return `${CLAUDE_RESULT_CONTINUATION}${WRAP_MARK}${text}`;
 }
 
-function branchLead(text: string, continued = false): string {
-	return `${TOOL_RULE}${continued ? "├─" : "└─"}${TRANSPARENT_RESET} ${WRAP_MARK}${text}`;
+function branchLead(text: string, _continued = false): string {
+	return `${TOOL_RULE}${CLAUDE_RESULT_PREFIX}${TRANSPARENT_RESET}${WRAP_MARK}${text}`;
 }
 
 function withBranch(content: string, _theme: Theme, _isError = false, continued = false): string {
@@ -1339,20 +1343,11 @@ function withBranch(content: string, _theme: Theme, _isError = false, continued 
 }
 
 function withFinalBranchBlock(content: string, theme: Theme, isError = false): string {
-	if (!content || !content.trim()) return "";
-	const lines = content.split("\n");
-	const first = lines[0] ?? "";
-	if (lines.length === 1) return branchLead(first, false);
-	const middle = lines.slice(1, -1).map((line) => branchIndent(line, true));
-	const last = lines[lines.length - 1] ?? "";
-	return [branchLead(first, true), ...middle, branchLead(last, false)].join("\n");
+	return withBranch(content, theme, isError);
 }
 
 function indentBranchBlock(block: string): string {
-	return block
-		.split("\n")
-		.map((line) => (line ? ` ${line}` : line))
-		.join("\n");
+	return block;
 }
 
 // ---------------------------------------------------------------------------
@@ -1454,8 +1449,8 @@ function clearBlinkTimer(ctx: any): void {
 function blinkDot(ctx: any, theme: Theme): string {
 	setupBlinkTimer(ctx);
 	const key = getBlinkKey(ctx);
-	if (key?._blinkActive !== true) return theme.fg("muted", "○");
-	return _globalBlinkPhase ? theme.fg("success", "●") : theme.fg("muted", "○");
+	if (key?._blinkActive !== true) return theme.fg("muted", CLAUDE_TOOL_GLYPH);
+	return _globalBlinkPhase ? theme.fg("accent", CLAUDE_TOOL_GLYPH) : theme.fg("muted", CLAUDE_TOOL_GLYPH);
 }
 
 // ---------------------------------------------------------------------------
@@ -1541,6 +1536,8 @@ function markedContinuationPrefix(prefix: string): string {
 	if (branchMatch) {
 		return `${branchMatch[1]}${TOOL_RULE}│${TRANSPARENT_RESET}  `;
 	}
+	const resultMatch = /^(\s*)⎿\s+/.exec(plain);
+	if (resultMatch) return " ".repeat(visibleWidth(prefix));
 	return " ".repeat(visibleWidth(prefix));
 }
 
@@ -5024,7 +5021,7 @@ export default function (pi: ExtensionAPI) {
 			const revealSummary = shouldRevealCallArgs(ctx) || (!!fp && hasOwnArg(args, "edits"));
 			const summary = stableCallSummary(ctx, "_callSummary", () => shouldRevealCallArgs(ctx) && operations.length > 1 ? `${sp(fp)} ${theme.fg("muted", `(${operations.length} edits)`)}` : sp(fp), revealSummary);
 			syncToolCallStatus(ctx);
-			const hdr = toolHeader("Edit", summary, theme, ` ${toolStatusDot(ctx, theme)}`);
+			const hdr = toolHeader("Edit", summary, theme, toolStatusDot(ctx, theme));
 			if (!(ctx.argsComplete && operations.length > 0)) return makeText(ctx.lastComponent, hdr);
 			const diffWidth = branchDiffWidth();
 			const key = `edit:${fp}:${hashText(operations.map((edit) => `${edit.oldText}\u0000${edit.newText}`).join("\u0001"))}:${diffWidth}:${ctx.expanded ? 1 : 0}`;
