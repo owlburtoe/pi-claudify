@@ -4,7 +4,7 @@ Claude Code inspired tool rendering for Pi — Shiki-powered diffs, status dots,
 
 ## Features
 
-- **Compact built-in tool rendering** for `read`, `bash`, `grep`, `find`, `ls`, `edit`, and `write`
+- **Compact Claude Code-like tool rendering** for `read`, `bash`, `grep`, `find`, `ls`, `edit`, and `write`, including `⏺ Tool(args)` headers and `⎿` result rows
 - **Semantic bash display** that renders common read-only shell one-liners like `nl -ba file | sed -n '1,200p'` as Claude Code-style `Read file (lines 1-200)` rows
 - **Read-only inspection grouping** that collapses consecutive `read`/`grep`/`find`/`ls` rows into one Claude-style `Inspect` block, capped to five visible entries by default
 - **Claude-style OpenAI tool rendering** for `apply_patch` plus common Pi/OpenAI-style tools like `webfetch`, `web_search`, `fetch_content`, task tools, and context tools
@@ -27,7 +27,7 @@ Set in `.pi/settings.json` or `~/.pi/settings.json`:
 
 ```json
 {
-  "toolBackground": "border",
+  "toolBackground": "transparent",
   "readOutputMode": "preview",
   "searchOutputMode": "preview",
   "mcpOutputMode": "preview",
@@ -125,7 +125,8 @@ Color selections are persisted as `spinnerColor` / `spinnerStatusColor` in `~/.p
 |-------|----------|
 | `default` | Standard Pi tool backgrounds |
 | `transparent` | Transparent tool backgrounds |
-| `border` | Transparent backgrounds with top/bottom border lines |
+| `border` | Transparent backgrounds with top/bottom border lines (alias for `outlines`) |
+| `outlines` | Transparent backgrounds with top/bottom border lines |
 
 ### Output modes
 
