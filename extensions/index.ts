@@ -42,8 +42,17 @@ import * as Diff from "diff";
 import type { BundledLanguage, BundledTheme } from "shiki";
 
 import {
+	describeInspectionsActive,
+	describeInspectionsDone,
+	type InspectionKind,
+} from "./inspection-summary.ts";
+import { describeEdit, describeWrite } from "./mutation-summary.ts";
+import {
 	DEFAULT_HIDDEN_THINKING_LABEL,
+	DEFAULT_USER_PREFIX,
 	formatTranscriptLines,
+	formatWorkedLine,
+	isWorkedLine,
 	resolveMessageChromeSettings,
 	sanitizeMessagePrefix,
 	type MessageChromeSettings,
@@ -77,6 +86,8 @@ const CLAUDE_TOOL_GLYPH = "⏺";
 const CLAUDE_RESULT_GLYPH = "⎿";
 const CLAUDE_RESULT_PREFIX = `  ${CLAUDE_RESULT_GLYPH}  `;
 const CLAUDE_RESULT_CONTINUATION = " ".repeat(CLAUDE_RESULT_PREFIX.length);
+// The collapsed read-only summary hangs at the bullet's indent, not the ⎿ gutter's.
+const CLAUDE_COLLAPSED_INDENT = "  ";
 
 type SpinnerVerbMode = "append" | "replace";
 
@@ -99,6 +110,12 @@ interface SettingsFile {
 	diffCollapsedLines?: number;
 	diffTheme?: string;
 	diffColors?: Record<string, string>;
+	/**
+	 * "claude" (default) renders diffs exactly as Claude Code does: unified layout,
+	 * fixed red/green palette, no box chrome. "theme" restores the theme-derived
+	 * tints and the adaptive split/unified layout.
+	 */
+	diffPalette?: "claude" | "theme";
 	/**
 	 * When true (default), derive borders, dim text, branch rules, and diff
 	 * accents from the active pi theme via `theme.getFgAnsi`/`getBgAnsi`.
@@ -383,7 +400,9 @@ function isReadOnlyInspectionToolExecution(value: unknown): boolean {
 	const rec = toolComponentRecord(value);
 	if (rec.expanded === true || componentHasImageResult(value)) return false;
 	if (rec.toolName === "read" || rec.toolName === "grep" || rec.toolName === "find" || rec.toolName === "ls") return true;
-	return !!bashReadDisplayInfo(value);
+	// Claude Code aggregates every shell command ("running 1 shell command"), not
+	// just the ones that look like file reads.
+	return rec.toolName === "bash";
 }
 
 function hasConsecutiveReadOnlyInspectionToolChildren(children: unknown[]): boolean {
@@ -517,6 +536,18 @@ function bashReadInspectionTarget(value: unknown): string {
 	return `${shortPath(componentCwd(value), info.path)}${range}`;
 }
 
+/** Raw shell command, for the `$ cmd` row under an aggregate header. */
+function bashInspectionCommand(value: unknown): string {
+	const rec = toolComponentRecord(value);
+	const command = rec.args?.command ?? rec.args?.cmd ?? "";
+	return summarizeText(typeof command === "string" ? command : String(command), 80);
+}
+
+/** A tool is settled once it has a result — running tools keep the group expanded. */
+function isSettledInspectionTool(value: unknown): boolean {
+	return !!toolComponentRecord(value).result;
+}
+
 function bashReadInspectionStatus(value: unknown): string {
 	const rec = toolComponentRecord(value);
 	if (!rec.result) return "Reading...";
@@ -525,13 +556,38 @@ function bashReadInspectionStatus(value: unknown): string {
 	return `${plural(count, "line")} read`;
 }
 
+function inspectionKind(value: unknown): InspectionKind {
+	const rec = toolComponentRecord(value);
+	if (rec.toolName === "read") return "read";
+	if (rec.toolName === "grep") return "grep";
+	if (rec.toolName === "find") return "find";
+	if (rec.toolName === "ls") return "ls";
+	return "bash";
+}
+
+/**
+ * The ⎿ row under an aggregate header is the bare target — a path for file
+ * tools, `$ command` for shell. No tool name, no status suffix.
+ */
 function summarizeReadOnlyInspectionTool(value: unknown): string {
 	const rec = toolComponentRecord(value);
-	if (rec.toolName === "read") return `Read ${readInspectionTarget(value)} — ${readInspectionStatus(value)}`;
-	if (rec.toolName === "grep") return `Grep ${grepInspectionTarget(value)} — ${grepInspectionStatus(value)}`;
-	if (rec.toolName === "find") return `Find ${findInspectionTarget(value)} — ${findInspectionStatus(value)}`;
-	if (rec.toolName === "ls") return `List ${listInspectionTarget(value)} — ${listInspectionStatus(value)}`;
-	return `Read ${bashReadInspectionTarget(value)} — ${bashReadInspectionStatus(value)}`;
+	if (rec.toolName === "read") return readInspectionTarget(value);
+	if (rec.toolName === "grep") return grepInspectionTarget(value);
+	if (rec.toolName === "find") return findInspectionTarget(value);
+	if (rec.toolName === "ls") return listInspectionTarget(value);
+	return `$ ${bashInspectionCommand(value)}`;
+}
+
+/**
+ * Once every tool in the group has settled, Claude Code drops the header and the
+ * ⎿ rows and leaves a single dim past-tense line, indented, with no bullet.
+ */
+function renderCollapsedInspectionGroup(kinds: InspectionKind[], width: number): string[] {
+	const summary = `${CLAUDE_COLLAPSED_INDENT}${WORKED_LINE_FG}${describeInspectionsDone(kinds)}${RESET}`;
+	const core = wrapMarkedLine(summary, width).map((line) => padToWidth(line, width));
+	if (toolBackgroundMode === "outlines") return [" ".repeat(width), borderLine(width), ...core, borderLine(width)];
+	if (toolBackgroundMode === "transparent") return [" ".repeat(width), ...core];
+	return core;
 }
 
 function renderInspectionGroup(group: unknown[], width: number): string[] {
@@ -539,14 +595,15 @@ function renderInspectionGroup(group: unknown[], width: number): string[] {
 	const limit = readOnlyToolGroupLimit();
 	const shown = group.slice(0, limit);
 	const remaining = group.length - shown.length;
-	const core: string[] = [` ${WRAP_MARK}${CLAUDE_TOOL_GLYPH} Inspect(${plural(group.length, "tool use")})`];
-	for (let index = 0; index < shown.length; index++) {
-		const prefix = index === 0 ? `${TOOL_RULE}${CLAUDE_RESULT_PREFIX}${TRANSPARENT_RESET}` : CLAUDE_RESULT_CONTINUATION;
-		core.push(`${prefix}${WRAP_MARK}${summarizeReadOnlyInspectionTool(shown[index])}`);
+	const kinds = group.map(inspectionKind);
+	const settled = group.every(isSettledInspectionTool);
+	if (settled) return renderCollapsedInspectionGroup(kinds, width);
+	const core: string[] = [`${WRAP_MARK}${CLAUDE_TOOL_GLYPH} ${describeInspectionsActive(kinds)}`];
+	for (const entry of shown) {
+		core.push(`${TOOL_RULE}${CLAUDE_RESULT_PREFIX}${TRANSPARENT_RESET}${WRAP_MARK}${summarizeReadOnlyInspectionTool(entry)}`);
 	}
 	if (remaining > 0) {
-		const prefix = shown.length === 0 ? `${TOOL_RULE}${CLAUDE_RESULT_PREFIX}${TRANSPARENT_RESET}` : CLAUDE_RESULT_CONTINUATION;
-		core.push(`${prefix}${WRAP_MARK}… ${remaining} more inspection${remaining === 1 ? "" : "s"}`);
+		core.push(`${TOOL_RULE}${CLAUDE_RESULT_PREFIX}${TRANSPARENT_RESET}${WRAP_MARK}… +${remaining} more`);
 	}
 	const renderedCore = core.flatMap((line) => wrapMarkedLine(line, width)).map((line) => padToWidth(line, width));
 	if (toolBackgroundMode === "outlines") return [" ".repeat(width), borderLine(width), ...renderedCore, borderLine(width)];
@@ -719,7 +776,7 @@ function hashText(text: string): string {
 }
 
 function expandHint(theme: Theme): string {
-	return theme.fg("muted", " • Ctrl+O to expand");
+	return theme.fg("muted", " (ctrl+o to expand)");
 }
 
 function clearStateKeys(state: Record<string, unknown> | undefined, ...keys: string[]): void {
@@ -740,57 +797,34 @@ function unrefTimer(timer: ReturnType<typeof setTimeout> | null | undefined): vo
 
 const ASSISTANT_PATCH_FLAG = Symbol.for("pi-claude-style-tools:patched-assistant-message");
 const TOOL_EXECUTION_PATCH_FLAG = Symbol.for("pi-claude-style-tools:patched-tool-execution");
+const TOOL_INDENT_PATCH_FLAG = Symbol.for("pi-claude-style-tools:patched-tool-row-indent");
 const OSC133_ZONE_START = "\x1b]133;A\x07";
 const OSC133_ZONE_END = "\x1b]133;B\x07";
 const OSC133_ZONE_FINAL = "\x1b]133;C\x07";
 const WORKED_DURATION_KEY = "_piClaudeStyleWorkedDurationMs";
 const WORKED_START_KEY = "_piClaudeStyleWorkedStartMs";
-const WORKED_DURATION_MARKER = "Worked for";
+// The worked-line verb rotates per turn ("Cooked", "Sautéed", …), so only the
+// glyph is a stable fast-path marker. isWorkedLine() does the real matching.
+const WORKED_DURATION_GLYPH = "✻";
 // WORKED_LINE_FG is theme-derived (from "muted") when themeAdaptive is on.
 let WORKED_LINE_FG = "\x1b[38;2;140;140;140m";
 let currentAgentWorkStartMs: number | undefined;
 let currentAssistantMessageStartMs: number | undefined;
 
-function formatWorkedDuration(ms: number): string {
-	const safeMs = Math.max(0, Number.isFinite(ms) ? ms : 0);
-	if (safeMs < 60_000) {
-		return `${Math.max(0, Math.floor(safeMs / 1000))}s`;
-	}
-	let days = Math.floor(safeMs / 86_400_000);
-	let hours = Math.floor((safeMs % 86_400_000) / 3_600_000);
-	let minutes = Math.floor((safeMs % 3_600_000) / 60_000);
-	let seconds = Math.round((safeMs % 60_000) / 1000);
-	if (seconds === 60) {
-		seconds = 0;
-		minutes++;
-	}
-	if (minutes === 60) {
-		minutes = 0;
-		hours++;
-	}
-	if (hours === 24) {
-		hours = 0;
-		days++;
-	}
-	if (days > 0) return `${days}d ${hours}h ${minutes}m`;
-	if (hours > 0) return `${hours}h ${minutes}m ${seconds}s`;
-	return `${minutes}m ${seconds}s`;
+function workedDurationText(ms: number, seed?: number): string {
+	return `${WORKED_LINE_FG}${formatWorkedLine(ms, { seed })}${RESET}`;
 }
 
-function workedDurationText(ms: number): string {
-	return `${WORKED_LINE_FG}✻ Worked for ${formatWorkedDuration(ms)}${RESET}`;
-}
-
-function inlineWorkedDurationText(ms: number): string {
-	return `${WORKED_LINE_FG}✻ Worked for ${formatWorkedDuration(ms)}${RESET}`;
+function inlineWorkedDurationText(ms: number, seed?: number): string {
+	return workedDurationText(ms, seed);
 }
 
 function isWorkedDurationLine(line: string): boolean {
-	return line.includes(WORKED_DURATION_MARKER) && /^✻ Worked for [^\r\n]+$/.test(stripAnsi(line).trim());
+	return isWorkedLine(stripAnsi(line));
 }
 
 function stripWorkedDurationLine(text: string): string {
-	if (!text.includes(WORKED_DURATION_MARKER)) return text;
+	if (!text.includes(WORKED_DURATION_GLYPH)) return text;
 	return text
 		.split(/\r?\n/)
 		.filter((line) => !isWorkedDurationLine(line))
@@ -801,7 +835,7 @@ function stripWorkedDurationLine(text: string): string {
 function hasWorkedDurationLine(message: any): boolean {
 	if (!Array.isArray(message?.content)) return false;
 	return message.content.some((block: any) => {
-		if (block?.type !== "text" || typeof block.text !== "string" || !block.text.includes(WORKED_DURATION_MARKER)) return false;
+		if (block?.type !== "text" || typeof block.text !== "string" || !block.text.includes(WORKED_DURATION_GLYPH)) return false;
 		return block.text.split(/\r?\n/).some(isWorkedDurationLine);
 	});
 }
@@ -811,7 +845,7 @@ function appendWorkedDurationLine(message: any, durationMs: number): void {
 	const textBlocks = message.content.filter((block: any) => block?.type === "text" && typeof block.text === "string" && block.text.trim());
 	const lastText = textBlocks[textBlocks.length - 1];
 	if (!lastText) return;
-	const text = lastText.text.includes(WORKED_DURATION_MARKER) ? stripWorkedDurationLine(lastText.text) : lastText.text;
+	const text = lastText.text.includes(WORKED_DURATION_GLYPH) ? stripWorkedDurationLine(lastText.text) : lastText.text;
 	lastText.text = `${text.trimEnd()}\n\n${inlineWorkedDurationText(durationMs)}`;
 }
 
@@ -869,12 +903,15 @@ class DottedParagraph {
 		const settings = getMessageChromeSettings();
 		const chromeKey = messageChromeCacheKey(settings, "assistant");
 		if (this.cachedLines && this.cachedWidth === width && this.cachedChromeKey === chromeKey) return this.cachedLines;
-		const prefixGlyph = settings.messageStyle === "classic" ? "●" : settings.assistantPrefix;
-		const prefixWidth = Math.max(1, visibleWidth(` ${prefixGlyph} `));
+		const isClassic = settings.messageStyle === "classic";
+		const prefixGlyph = isClassic ? "●" : settings.assistantPrefix;
+		// Claude style puts the glyph at column 0; classic keeps its leading space.
+		const prefix = isClassic ? ` ${prefixGlyph} ` : `${prefixGlyph} `;
+		const prefixWidth = Math.max(1, visibleWidth(prefix));
 		if (width <= prefixWidth) {
 			this.cachedWidth = width;
 			this.cachedChromeKey = chromeKey;
-			this.cachedLines = [` ${prefixGlyph} `];
+			this.cachedLines = [prefix];
 			return this.cachedLines;
 		}
 		const lines = sanitizeRenderedTextBlockLines(this.md.render(width - prefixWidth));
@@ -948,13 +985,15 @@ class ThinkingParagraph {
 		const settings = getMessageChromeSettings();
 		const chromeKey = messageChromeCacheKey(settings, "thinking");
 		if (this.cachedLines && this.cachedWidth === width && this.cachedChromeKey === chromeKey) return this.cachedLines;
-		const prefixGlyph = settings.messageStyle === "classic" ? "✻" : settings.thinkingPrefix;
+		const isClassic = settings.messageStyle === "classic";
+		const prefixGlyph = isClassic ? "✻" : settings.thinkingPrefix;
 		const coloredPrefixGlyph = `${WORKED_LINE_FG}${prefixGlyph}${RESET}`;
-		const prefixWidth = Math.max(1, visibleWidth(` ${prefixGlyph} `));
+		const prefix = isClassic ? ` ${prefixGlyph} ` : `${prefixGlyph} `;
+		const prefixWidth = Math.max(1, visibleWidth(prefix));
 		if (width <= prefixWidth) {
 			this.cachedWidth = width;
 			this.cachedChromeKey = chromeKey;
-			this.cachedLines = [` ${coloredPrefixGlyph} `];
+			this.cachedLines = [isClassic ? ` ${coloredPrefixGlyph} ` : `${coloredPrefixGlyph} `];
 			return this.cachedLines;
 		}
 		const lines = sanitizeRenderedTextBlockLines(this.md.render(width - prefixWidth));
@@ -1014,19 +1053,6 @@ function stripBackgroundAnsi(text: string): string {
 	});
 }
 
-function roundedUserBorder(width: number, top: boolean): string {
-	if (width <= 1) return `${BORDER_COLOR}│${TRANSPARENT_RESET}`;
-	const left = top ? "╭" : "╰";
-	const right = top ? "╮" : "╯";
-	if (!top || width < 10) {
-		return `${BORDER_COLOR}${left}${"─".repeat(Math.max(0, width - 2))}${right}${TRANSPARENT_RESET}`;
-	}
-	const label = " User ";
-	const prefix = "─";
-	const suffixWidth = Math.max(0, width - 2 - visibleWidth(prefix) - visibleWidth(label));
-	return `${BORDER_COLOR}${left}${prefix}${TRANSPARENT_RESET}${label}${BORDER_COLOR}${"─".repeat(suffixWidth)}${right}${TRANSPARENT_RESET}`;
-}
-
 function trimAnsiRight(text: string): string {
 	let trimmed = text;
 	while (true) {
@@ -1040,11 +1066,12 @@ function cleanUserMessageLine(line: string): string {
 	return `${TRANSPARENT_BG}${trimAnsiRight(stripBackgroundAnsi(stripOsc133Zones(line)))}${TRANSPARENT_BG}`;
 }
 
-function borderedUserMessageLine(line: string, width: number): string {
-	const innerWidth = Math.max(1, width - 4);
-	const content = clampLineWidth(cleanUserMessageLine(line), innerWidth);
-	const padding = " ".repeat(Math.max(0, innerWidth - visibleWidth(content)));
-	return `${BORDER_COLOR}│${TRANSPARENT_RESET} ${content}${padding} ${BORDER_COLOR}│${TRANSPARENT_RESET}`;
+const USER_PREFIX_WIDTH = visibleWidth(`${DEFAULT_USER_PREFIX} `);
+
+function colorizeUserPrefix(line: string): string {
+	if (!line.startsWith(DEFAULT_USER_PREFIX)) return line;
+	const rest = line.slice(DEFAULT_USER_PREFIX.length);
+	return `${WORKED_LINE_FG}${DEFAULT_USER_PREFIX}${TRANSPARENT_RESET}${rest}`;
 }
 
 function patchUserMessageRender(): void {
@@ -1053,22 +1080,32 @@ function patchUserMessageRender(): void {
 	const originalRender = proto.render;
 	if (typeof originalRender !== "function") return;
 	proto.render = function patchedUserMessageRender(width: number) {
+		// Duck-typed, not instanceof: the extension and pi can resolve separate
+		// copies of pi-tui, which makes instanceof fail across the boundary.
 		for (const child of (this as any).children ?? []) {
 			const markdown = child as any;
-			if (child instanceof Markdown && markdown.defaultTextStyle?.bgColor) {
+			if (!markdown || typeof markdown.render !== "function") continue;
+			let dirty = false;
+			if (markdown.defaultTextStyle?.bgColor) {
 				markdown.defaultTextStyle.bgColor = undefined;
-				markdown.invalidate?.();
+				dirty = true;
 			}
+			// pi pads user markdown one column; the ❯ prefix supplies the indent.
+			if (typeof markdown.paddingX === "number" && markdown.paddingX !== 0) {
+				markdown.paddingX = 0;
+				dirty = true;
+			}
+			if (dirty) markdown.invalidate?.();
 		}
-		const borderWidth = Math.max(1, width);
-		const contentWidth = Math.max(1, borderWidth - 4);
+		const contentWidth = Math.max(1, width - USER_PREFIX_WIDTH);
 		const lines = originalRender.call(this, contentWidth);
 		if (!Array.isArray(lines) || lines.length === 0) return lines;
-		const rendered = [
-			roundedUserBorder(borderWidth, true),
-			...lines.map((line: string) => borderedUserMessageLine(line, borderWidth)),
-			roundedUserBorder(borderWidth, false),
-		];
+		const rendered = formatTranscriptLines(lines.map(cleanUserMessageLine), {
+			prefix: DEFAULT_USER_PREFIX,
+			spacing: "comfortable",
+			normalizeChecks: false,
+			visibleWidth,
+		}).map((line, index) => (index === 0 ? colorizeUserPrefix(line) : line));
 		rendered[0] = OSC133_ZONE_START + rendered[0];
 		rendered[rendered.length - 1] += OSC133_ZONE_END + OSC133_ZONE_FINAL;
 		return rendered;
@@ -1119,7 +1156,7 @@ function patchAssistantMessages(): void {
 				: undefined;
 		const hasAssistantText = message.content.some((block: any) => block?.type === "text" && typeof block.text === "string" && block.text.trim());
 		if (typeof workedDuration === "number" && isFinalAssistantMessage && hasAssistantText && !hasWorkedDurationLine(message)) {
-			container.children.push(new Spacer(1), new Text(workedDurationText(workedDuration), 1, 0));
+			container.children.push(new Spacer(1), new Text(workedDurationText(workedDuration, componentStart), 0, 0));
 		}
 	};
 	proto[ASSISTANT_PATCH_FLAG] = true;
@@ -1188,6 +1225,27 @@ function patchReadImageExpansion(): void {
 		return result;
 	};
 	proto[TOOL_IMAGE_EXPAND_PATCH_FLAG] = true;
+}
+
+/**
+ * pi wraps each tool row in a Box(paddingX: 1), which indents every ⏺ header one
+ * column further than assistant text. Claude Code aligns both at column 0.
+ */
+function patchToolRowIndent(): void {
+	const proto = ToolExecutionComponent.prototype as any;
+	if (proto[TOOL_INDENT_PATCH_FLAG]) return;
+	const originalUpdateDisplay = proto.updateDisplay;
+	if (typeof originalUpdateDisplay !== "function") return;
+	proto.updateDisplay = function patchedToolIndentUpdateDisplay(...args: any[]) {
+		for (const box of [this.contentBox, this.contentText]) {
+			if (box && box.paddingX !== 0) {
+				box.paddingX = 0;
+				box.invalidate?.();
+			}
+		}
+		return originalUpdateDisplay.apply(this, args);
+	};
+	proto[TOOL_INDENT_PATCH_FLAG] = true;
 }
 
 function patchToolExecutionRenderers(): void {
@@ -1525,6 +1583,13 @@ function lineCount(text: string): number {
 	return text.split("\n").length;
 }
 
+/** Lines actually written — a single trailing newline terminates, it doesn't add a line. */
+function writtenLineCount(text: string): number {
+	if (!text) return 0;
+	const body = text.endsWith("\n") ? text.slice(0, -1) : text;
+	return body.length === 0 ? 0 : body.split("\n").length;
+}
+
 function padToWidth(line: string, width: number): string {
 	const padding = Math.max(0, width - visibleWidth(line));
 	return `${line}${" ".repeat(padding)}`;
@@ -1820,7 +1885,7 @@ function buildPreviewText(lines: string[], expanded: boolean, theme: Theme, fall
 	let text = shown.join("\n");
 	const remaining = lines.length - shown.length;
 	if (remaining > 0) {
-		text += `\n${theme.fg("muted", `... (${remaining} more lines${expanded ? "" : " • Ctrl+O to expand"})`)}`;
+		text += `\n${theme.fg("muted", `… +${remaining} lines${expanded ? "" : " (ctrl+o to expand)"}`)}`;
 	}
 	if (expanded && lines.length > maxLines) {
 		text += `\n${theme.fg("warning", `(display capped at ${maxLines} lines)`)}`;
@@ -2018,7 +2083,18 @@ function themeAdaptiveEnabled(): boolean {
 	return settings.themeAdaptive !== false;
 }
 
-let DIFF_THEME: BundledTheme = (process.env.DIFF_THEME as BundledTheme | undefined) ?? "github-dark";
+/**
+ * When on (the default), diffs use Claude Code's fixed palette and unified layout
+ * instead of deriving colors from the active pi theme. Set `diffPalette: "theme"`
+ * to get the theme-derived tints back.
+ */
+function claudeDiffPaletteEnabled(): boolean {
+	return readSettings().diffPalette !== "theme";
+}
+
+// Claude Code highlights diff content with a Monokai palette (fg 248,248,242,
+// keywords 102,217,239, numbers 190,132,255).
+let DIFF_THEME: BundledTheme = (process.env.DIFF_THEME as BundledTheme | undefined) ?? "monokai";
 let codeToAnsiLoader: Promise<any> | null = null;
 
 const SPLIT_MIN_WIDTH = 150;
@@ -2040,19 +2116,29 @@ let D_RST = "\x1b[0m";
 const D_BOLD = "\x1b[1m";
 const D_DIM = "\x1b[2m";
 
-// Diff backgrounds — defaults are transparent; autoDeriveBgFromTheme fills them
-// using pi-tool-display's mix ratios against the theme's toolSuccessBg.
-let BG_ADD = "\x1b[49m";
-let BG_DEL = "\x1b[49m";
-let BG_ADD_W = "\x1b[49m";
-let BG_DEL_W = "\x1b[49m";
-let BG_GUTTER_ADD = "\x1b[49m";
-let BG_GUTTER_DEL = "\x1b[49m";
+// Claude Code's diff palette, read off the raw TTY stream. The line background is
+// painted across gutter and content; the changed token gets the brighter variant.
+// See docs/plans/2026-07-13-current-cc-grammar.md.
+const CC_BG_ADD = "\x1b[48;2;2;40;0m";
+const CC_BG_DEL = "\x1b[48;2;61;1;0m";
+const CC_BG_ADD_WORD = "\x1b[48;2;4;71;0m";
+const CC_BG_DEL_WORD = "\x1b[48;2;92;2;0m";
+const CC_FG_ADD = "\x1b[38;2;80;200;80m";
+const CC_FG_DEL = "\x1b[38;2;220;90;90m";
+
+// Diff backgrounds default to Claude Code's palette; autoDeriveBgFromTheme only
+// overrides them when the user opts out of the Claude palette.
+let BG_ADD = CC_BG_ADD;
+let BG_DEL = CC_BG_DEL;
+let BG_ADD_W = CC_BG_ADD_WORD;
+let BG_DEL_W = CC_BG_DEL_WORD;
+let BG_GUTTER_ADD = CC_BG_ADD;
+let BG_GUTTER_DEL = CC_BG_DEL;
 let BG_EMPTY = "\x1b[49m";
 let BG_BASE = "\x1b[49m";
 
-let FG_ADD = "\x1b[38;2;100;180;120m";
-let FG_DEL = "\x1b[38;2;200;100;100m";
+let FG_ADD = CC_FG_ADD;
+let FG_DEL = CC_FG_DEL;
 let FG_DIM = "\x1b[38;2;80;80;80m";
 let FG_LNUM = "\x1b[38;2;100;100;100m";
 let FG_RULE = "\x1b[38;2;50;50;50m";
@@ -2108,6 +2194,13 @@ function rgbToBgAnsi(c: { r: number; g: number; b: number }): string {
 }
 
 function autoDeriveBgFromTheme(theme: any): void {
+	// The Claude palette is fixed, not derived — bail before touching diff colors.
+	if (claudeDiffPaletteEnabled()) {
+		BG_EMPTY = TRANSPARENT_BG;
+		BG_BASE = TRANSPARENT_BG;
+		D_RST = TRANSPARENT_RESET;
+		return;
+	}
 	// Diff palette derivation.
 	//
 	// `toolDiffAdded` / `toolDiffRemoved` from the active pi theme give us the
@@ -2467,6 +2560,19 @@ function lnum(n: number | null, width: number, fg = FG_LNUM): string {
 	return `${fg}${" ".repeat(Math.max(0, width - value.length))}${value}${D_RST}`;
 }
 
+/** Right-aligned line number with no color of its own — the row's fg carries. */
+function lnumPlain(n: number | null, width: number): string {
+	if (n === null) return " ".repeat(width);
+	const value = String(n);
+	return `${" ".repeat(Math.max(0, width - value.length))}${value}`;
+}
+
+/** Extend a row's background to the full width, as Claude Code does. */
+function padRowToWidth(row: string, width: number, bg: string): string {
+	const padding = Math.max(0, width - visibleWidth(row));
+	return `${row}${bg}${" ".repeat(padding)}${D_RST}`;
+}
+
 function stripes(width: number): string {
 	return BG_BASE + FG_STRIPE + "╱".repeat(width) + D_RST;
 }
@@ -2504,9 +2610,9 @@ function diffSummaryWithMeta(added: number, removed: number, hunks: number, mode
 function collapsedDiffHint(remainingLines: number, hiddenHunks: number): string {
 	const width = termW();
 	const candidates = [
-		`… (${remainingLines} more diff lines${hiddenHunks > 0 ? ` • ${hiddenHunks} more hunks` : ""} • Ctrl+O to expand)`,
-		`… (${remainingLines} more lines${hiddenHunks > 0 ? ` • ${hiddenHunks} hunks` : ""})`,
-		`… (+${remainingLines}${hiddenHunks > 0 ? ` • +${hiddenHunks}h` : ""})`,
+		`… +${remainingLines} lines${hiddenHunks > 0 ? ` · ${hiddenHunks} more hunks` : ""} (ctrl+o to expand)`,
+		`… +${remainingLines} lines${hiddenHunks > 0 ? ` · ${hiddenHunks} hunks` : ""}`,
+		`… +${remainingLines}${hiddenHunks > 0 ? ` · +${hiddenHunks}h` : ""}`,
 		"…",
 	];
 	for (const candidate of candidates) {
@@ -2521,6 +2627,8 @@ function diffRule(width: number): string {
 
 function shouldUseSplit(diff: ParsedDiff, tw: number, maxRows = MAX_PREVIEW_LINES): boolean {
 	if (!diff.lines.length) return false;
+	// Claude Code always renders a unified hunk — it has no split view.
+	if (claudeDiffPaletteEnabled()) return false;
 	if (tw < SPLIT_MIN_WIDTH) return false;
 	const nw = Math.max(2, String(Math.max(...diff.lines.map((l) => l.oldNum ?? l.newNum ?? 0), 0)).length);
 	const half = Math.floor((tw - 1) / 2);
@@ -2626,7 +2734,7 @@ async function hlBlock(code: string, language: BundledLanguage | undefined): Pro
 	}
 }
 
-function parseDiff(oldContent: string, newContent: string, ctxLines = 3): ParsedDiff {
+export function parseDiff(oldContent: string, newContent: string, ctxLines = 3): ParsedDiff {
 	const patch = Diff.structuredPatch("", "", oldContent, newContent, "", "", { context: ctxLines });
 	const lines: DiffLine[] = [];
 	let added = 0;
@@ -2745,7 +2853,43 @@ function plainWordDiff(oldText: string, newText: string): { old: string; new: st
 	return { old: oldOut, new: newOut };
 }
 
-async function renderUnified(
+/**
+ * A write renders as a plain numbered listing in Claude Code — dim line numbers,
+ * syntax-highlighted content, no sign column and no added-line background:
+ *
+ *   ⎿  Wrote 3 lines to ../../../../tmp/ccdiff.ts
+ *       1 const a = 1;
+ *       2 const b = 2;
+ */
+export async function renderFileListing(
+	content: string,
+	language: BundledLanguage | undefined,
+	max = MAX_RENDER_LINES,
+	width = termW(),
+): Promise<string> {
+	const all = content.split("\n");
+	if (all.length > 0 && all[all.length - 1] === "") all.pop();
+	if (all.length === 0) return "";
+	const vis = all.slice(0, max);
+	const nw = Math.max(1, String(vis.length).length);
+	const cw = Math.max(20, width - (nw + 2));
+	const canHL = content.length <= MAX_HL_CHARS && vis.length <= MAX_RENDER_LINES;
+	const highlighted = canHL ? await hlBlock(vis.join("\n"), language) : vis;
+
+	const out: string[] = [];
+	for (let i = 0; i < vis.length; i++) {
+		const gutter = `${D_DIM} ${lnumPlain(i + 1, nw)} ${D_RST}`;
+		const rows = wrapAnsi(tabs(highlighted[i] ?? vis[i]), cw, adaptiveWrapRows(), "");
+		out.push(`${gutter}${rows[0]}${D_RST}`);
+		for (let r = 1; r < rows.length; r++) out.push(`${" ".repeat(nw + 2)}${rows[r]}${D_RST}`);
+	}
+	if (all.length > vis.length) {
+		out.push(`${FG_DIM}${" ".repeat(nw + 2)}${collapsedDiffHint(all.length - vis.length, 0)}${D_RST}`);
+	}
+	return out.join("\n");
+}
+
+export async function renderUnified(
 	diff: ParsedDiff,
 	language: BundledLanguage | undefined,
 	max = MAX_RENDER_LINES,
@@ -2755,8 +2899,12 @@ async function renderUnified(
 	if (!diff.lines.length) return "";
 	const vis = diff.lines.slice(0, max);
 	const tw = width;
-	const nw = Math.max(2, String(Math.max(...vis.map((l) => l.oldNum ?? l.newNum ?? 0), 0)).length);
-	const gw = nw + 5;
+	// Claude Code sizes the number column to the widest line number, minimum one.
+	const nw = claudeDiffPaletteEnabled()
+		? Math.max(1, String(Math.max(...vis.map((l) => l.oldNum ?? l.newNum ?? 0), 0)).length)
+		: Math.max(2, String(Math.max(...vis.map((l) => l.oldNum ?? l.newNum ?? 0), 0)).length);
+	// Claude gutter is " N " plus the sign column; the legacy one adds a border and divider.
+	const gw = claudeDiffPaletteEnabled() ? nw + 3 : nw + 5;
 	const cw = Math.max(20, tw - gw);
 	const canHL = diff.chars <= MAX_HL_CHARS && vis.length <= MAX_RENDER_LINES;
 
@@ -2773,9 +2921,25 @@ async function renderUnified(
 	let oldIndex = 0;
 	let newIndex = 0;
 	let index = 0;
-	const out: string[] = [diffRule(tw)];
+	const claude = claudeDiffPaletteEnabled();
+	const out: string[] = claude ? [] : [diffRule(tw)];
+
+	// Claude Code's row: " N " gutter, sign column, content — the line background
+	// runs across all three to the full width. No border bar, no divider, no rules.
+	function emitClaudeRow(num: number | null, sign: string, bg: string, signFg: string, body: string): void {
+		const gutterFg = sign === " " ? `${D_DIM}` : signFg;
+		const gutter = `${bg}${gutterFg} ${lnumPlain(num, nw)} ${sign}${D_RST}${bg}`;
+		const rows = wrapAnsi(tabs(body), cw, adaptiveWrapRows(), bg);
+		const contGutter = `${bg}${" ".repeat(nw + 3)}`;
+		out.push(padRowToWidth(`${gutter}${rows[0]}`, tw, bg));
+		for (let r = 1; r < rows.length; r++) out.push(padRowToWidth(`${contGutter}${rows[r]}`, tw, bg));
+	}
 
 	function emitRow(num: number | null, sign: string, gutterBg: string, signFg: string, body: string, bodyBg = ""): void {
+		if (claude) {
+			emitClaudeRow(num, sign, bodyBg || BG_BASE, signFg, body);
+			return;
+		}
 		const borderFg = sign === "-" ? dc.fgDel : sign === "+" ? dc.fgAdd : "";
 		const border = borderFg ? `${borderFg}▌${D_RST}` : `${BG_BASE} `;
 		const numFg = borderFg || FG_LNUM;
@@ -2790,6 +2954,12 @@ async function renderUnified(
 		const line = vis[index];
 		if (line.type === "sep") {
 			const gap = line.newNum;
+			if (claude) {
+				const label = gap && gap > 0 ? `… +${gap} unmodified lines` : "…";
+				out.push(`${BG_BASE}${FG_DIM}${" ".repeat(nw + 3)}${label}${D_RST}`);
+				index++;
+				continue;
+			}
 			const label = gap && gap > 0 ? ` ${gap} unmodified lines ` : "···";
 			const totalW = Math.min(tw, 72);
 			const pad = Math.max(0, totalW - label.length - 2);
@@ -2801,16 +2971,20 @@ async function renderUnified(
 		}
 		if (line.type === "ctx") {
 			const hl = oldHL[oldIndex] ?? line.content;
-			emitRow(line.newNum, " ", BG_BASE, dc.fgCtx, `${BG_BASE}${D_DIM}${hl}`, BG_BASE);
+			// Claude Code dims only the line number on context rows, not the code.
+			emitRow(line.newNum, " ", BG_BASE, dc.fgCtx, claude ? `${BG_BASE}${hl}` : `${BG_BASE}${D_DIM}${hl}`, BG_BASE);
 			oldIndex++;
 			newIndex++;
 			index++;
 			continue;
 		}
 
+		// Claude Code does not syntax-highlight removed lines — they render in the
+		// plain foreground, and only additions and context keep their tokens.
 		const dels: Array<{ l: DiffLine; hl: string }> = [];
 		while (index < vis.length && vis[index].type === "del") {
-			dels.push({ l: vis[index], hl: oldHL[oldIndex] ?? vis[index].content });
+			const plain = vis[index].content;
+			dels.push({ l: vis[index], hl: claude ? plain : (oldHL[oldIndex] ?? plain) });
 			oldIndex++;
 			index++;
 		}
@@ -2821,24 +2995,39 @@ async function renderUnified(
 			index++;
 		}
 
-		const isPaired = dels.length === 1 && adds.length === 1;
-		const wd = isPaired ? wordDiffAnalysis(dels[0].l.content, adds[0].l.content) : null;
-		if (isPaired && wd && wd.similarity >= WORD_DIFF_MIN_SIM && canHL) {
-			emitRow(dels[0].l.oldNum, "-", BG_GUTTER_DEL, `${dc.fgDel}${D_BOLD}`, injectBg(dels[0].hl, wd.oldRanges, BG_DEL, BG_DEL_W), BG_DEL);
-			emitRow(adds[0].l.newNum, "+", BG_GUTTER_ADD, `${dc.fgAdd}${D_BOLD}`, injectBg(adds[0].hl, wd.newRanges, BG_ADD, BG_ADD_W), BG_ADD);
+		// Claude Code word-diffs every aligned removal/addition pair in a hunk, not
+		// just lone one-for-one swaps — so emphasis survives multi-line edits. Rows
+		// still emit as all-removals-then-all-additions.
+		const pairable = dels.length > 0 && dels.length === adds.length;
+		const pairs = pairable
+			? dels.map((d, i) => ({ d, a: adds[i], wd: wordDiffAnalysis(d.l.content, adds[i].l.content) }))
+			: [];
+		const emphasized = pairable && pairs.every((p) => p.wd && p.wd.similarity >= WORD_DIFF_MIN_SIM);
+
+		if (emphasized && canHL) {
+			for (const { d, wd } of pairs) {
+				emitRow(d.l.oldNum, "-", BG_GUTTER_DEL, `${dc.fgDel}${D_BOLD}`, injectBg(d.hl, wd!.oldRanges, BG_DEL, BG_DEL_W), BG_DEL);
+			}
+			for (const { a, wd } of pairs) {
+				emitRow(a.l.newNum, "+", BG_GUTTER_ADD, `${dc.fgAdd}${D_BOLD}`, injectBg(a.hl, wd!.newRanges, BG_ADD, BG_ADD_W), BG_ADD);
+			}
 			continue;
 		}
-		if (isPaired && wd && wd.similarity >= WORD_DIFF_MIN_SIM && !canHL) {
-			const pwd = plainWordDiff(dels[0].l.content, adds[0].l.content);
-			emitRow(dels[0].l.oldNum, "-", BG_GUTTER_DEL, `${dc.fgDel}${D_BOLD}`, `${BG_DEL}${pwd.old}`, BG_DEL);
-			emitRow(adds[0].l.newNum, "+", BG_GUTTER_ADD, `${dc.fgAdd}${D_BOLD}`, `${BG_ADD}${pwd.new}`, BG_ADD);
+		if (emphasized && !canHL) {
+			const plainPairs = pairs.map(({ d, a }) => ({ d, a, pwd: plainWordDiff(d.l.content, a.l.content) }));
+			for (const { d, pwd } of plainPairs) {
+				emitRow(d.l.oldNum, "-", BG_GUTTER_DEL, `${dc.fgDel}${D_BOLD}`, `${BG_DEL}${pwd.old}`, BG_DEL);
+			}
+			for (const { a, pwd } of plainPairs) {
+				emitRow(a.l.newNum, "+", BG_GUTTER_ADD, `${dc.fgAdd}${D_BOLD}`, `${BG_ADD}${pwd.new}`, BG_ADD);
+			}
 			continue;
 		}
 		for (const d of dels) emitRow(d.l.oldNum, "-", BG_GUTTER_DEL, `${dc.fgDel}${D_BOLD}`, `${BG_DEL}${canHL ? d.hl : d.l.content}`, BG_DEL);
 		for (const a of adds) emitRow(a.l.newNum, "+", BG_GUTTER_ADD, `${dc.fgAdd}${D_BOLD}`, `${BG_ADD}${canHL ? a.hl : a.l.content}`, BG_ADD);
 	}
 
-	out.push(diffRule(tw));
+	if (!claude) out.push(diffRule(tw));
 	if (diff.lines.length > vis.length) out.push(`${BG_BASE}${FG_DIM}  ${collapsedDiffHint(diff.lines.length - vis.length, 0)}${D_RST}`);
 	return out.join("\n");
 }
@@ -3158,13 +3347,13 @@ function renderEditPreviewBody(
 		renderSplit(diff, language, ctx.expanded ? MAX_PREVIEW_LINES : 32, dc, branchWidth)
 			.then((rendered) => {
 				if (ctx.state._pk !== key) return;
-				ctx.state._ptBody = `${summarizeDiff(diff.added, diff.removed)}${formatLineMeta(line, theme)}\n${rendered}`;
+				ctx.state._ptBody = `${theme.fg("muted", describeEdit(diff.added, diff.removed))}\n${rendered}`;
 				ctx.state._ptDisplay = indentBranchBlock(withBranch(ctx.state._ptBody, theme, false, true));
 				ctx.invalidate();
 			})
 			.catch(() => {
 				if (ctx.state._pk !== key) return;
-				ctx.state._ptBody = `${summarizeDiff(diff.added, diff.removed)}${formatLineMeta(line, theme)}`;
+				ctx.state._ptBody = `${theme.fg("muted", describeEdit(diff.added, diff.removed))}`;
 				ctx.state._ptDisplay = indentBranchBlock(withBranch(ctx.state._ptBody, theme, false, true));
 				ctx.invalidate();
 			});
@@ -3186,7 +3375,7 @@ function renderEditPreviewBody(
 			if (ctx.state._pk !== key) return;
 			const remainder = operations.length - maxShown;
 			const suffix = remainder > 0
-				? `\n${theme.fg("muted", `… ${remainder} more edit blocks${ctx.expanded ? "" : " • Ctrl+O to expand"}`)}`
+				? `\n${theme.fg("muted", `… ${remainder} more edit blocks${ctx.expanded ? "" : " (ctrl+o to expand)"}`)}`
 				: "";
 			ctx.state._ptBody = `${operations.length} edits ${summary}\n\n${sections.join("\n\n")}${suffix}`;
 			ctx.state._ptDisplay = indentBranchBlock(withBranch(ctx.state._ptBody, theme, false, true));
@@ -3809,7 +3998,7 @@ function renderApplyPatchCall(args: any, theme: Theme, ctx: any, sp: (path: stri
 					if (ctx.state._applyPatchPreviewKey !== key) return;
 					const remainder = preview.changes.length - maxShown;
 					const suffix = remainder > 0
-						? `\n${theme.fg("muted", `… ${remainder} more file patches${ctx.expanded ? "" : " • Ctrl+O to expand"}`)}`
+						? `\n${theme.fg("muted", `… ${remainder} more file patches${ctx.expanded ? "" : " (ctrl+o to expand)"}`)}`
 						: "";
 					const summary = `${preview.changes.length} files ${preview.summary}`;
 					ctx.state._applyPatchPreviewBody = `${summary}\n\n${sections.join("\n\n")}${suffix}`;
@@ -3892,7 +4081,7 @@ function renderMcpToolResult(result: any, expanded: boolean, isPartial: boolean,
 
 	const statusText = ctx.isError ? theme.fg("error", lines[0]) : theme.fg("muted", `${lines.length} line${lines.length === 1 ? "" : "s"} returned`);
 	if (mode === "summary") return makeText(ctx.lastComponent, withBranch(statusText, theme));
-	if (!expanded) return makeText(ctx.lastComponent, withBranch(`${statusText}${theme.fg("muted", " • Ctrl+O to expand")}`, theme));
+	if (!expanded) return makeText(ctx.lastComponent, withBranch(`${statusText}${theme.fg("muted", " (ctrl+o to expand)")}`, theme));
 	const preview = buildPreviewText(lines.map((line) => theme.fg(ctx.isError ? "error" : "toolOutput", line || " ")), true, theme, previewLimit());
 	return makeText(ctx.lastComponent, withBranch(`${statusText}\n${preview}`, theme));
 }
@@ -4065,7 +4254,7 @@ function renderTaskListResult(lines: string[], expanded: boolean, theme: Theme, 
 	if (parts.length > 0) summary += ` ${theme.fg("muted", "•")} ${parts.join(` ${theme.fg("muted", "•")} `)}`;
 
 	if (!expanded) {
-		return makeText(ctx.lastComponent, withBranch(`${summary}${theme.fg("muted", " • Ctrl+O to expand")}`, theme));
+		return makeText(ctx.lastComponent, withBranch(`${summary}${theme.fg("muted", " (ctrl+o to expand)")}`, theme));
 	}
 
 	const shown = tasks.slice(0, previewLimit());
@@ -4099,7 +4288,7 @@ function renderReadImageResult(result: any, expanded: boolean, theme: Theme, ctx
 	const mimeType = image?.mimeType ?? "image";
 	const summary = `${theme.fg("success", "Image loaded")} ${theme.fg("muted", `[${mimeType}]`)}`;
 	if (!expanded) {
-		return makeText(ctx.lastComponent, withBranch(`${summary}${theme.fg("muted", " • Ctrl+O to show")}`, theme));
+		return makeText(ctx.lastComponent, withBranch(`${summary}${theme.fg("muted", " (ctrl+o to show)")}`, theme));
 	}
 
 	const noteLines = getTextContent(result)
@@ -4142,7 +4331,7 @@ function renderOpenAiToolResult(name: string, result: any, expanded: boolean, is
 		? theme.fg("error", lines[0])
 		: theme.fg("muted", `${lines.length} line${lines.length === 1 ? "" : "s"} returned`);
 	if (!expanded) {
-		return makeText(ctx.lastComponent, withBranch(`${statusText}${theme.fg("muted", " • Ctrl+O to expand")}`, theme));
+		return makeText(ctx.lastComponent, withBranch(`${statusText}${theme.fg("muted", " (ctrl+o to expand)")}`, theme));
 	}
 
 	if (!ctx.isError && lines.length === 1) {
@@ -4166,6 +4355,7 @@ export default function (pi: ExtensionAPI) {
 	patchCustomMessageRender();
 	patchUserMessageRender();
 	patchAssistantMessages();
+	patchToolRowIndent();
 	patchToolExecutionRenderers();
 	applyDiffPalette();
 	registerThinkingLabels(pi);
@@ -4656,7 +4846,7 @@ export default function (pi: ExtensionAPI) {
 			const lines = content.text.split("\n");
 			let text = theme.fg("muted", `${lines.length} lines loaded`);
 			if (details?.truncation?.truncated) text += theme.fg("warning", " (truncated)");
-			if (!expanded) return makeText(ctx.lastComponent, withBranch(`${text}${theme.fg("muted", " • Ctrl+O to expand")}`, theme));
+			if (!expanded) return makeText(ctx.lastComponent, withBranch(`${text}${theme.fg("muted", " (ctrl+o to expand)")}`, theme));
 			const shown = lines.slice(0, previewLimit());
 			text += `\n${buildPreviewText(shown.map((line) => theme.fg("dim", line || " ")), false, theme, previewLimit())}`;
 			return makeText(ctx.lastComponent, withBranch(text, theme));
@@ -4713,7 +4903,7 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			if (!expanded && nonEmpty.length > 0) {
-				const hint = semantic?.suppressCollapsedHint ? "" : theme.fg("muted", " • Ctrl+O to expand");
+				const hint = semantic?.suppressCollapsedHint ? "" : theme.fg("muted", " (ctrl+o to expand)");
 				return makeText(ctx.lastComponent, withBranch(`${text}${hint}`, theme));
 			}
 			if (!expanded) return makeText(ctx.lastComponent, withBranch(text, theme));
@@ -4754,7 +4944,7 @@ export default function (pi: ExtensionAPI) {
 			if (matches.length === 0) return makeText(ctx.lastComponent, withBranch(theme.fg("muted", "no matches"), theme));
 			let text = theme.fg("muted", `${matches.length} matches`);
 			if (details?.truncation?.truncated) text += theme.fg("warning", " (truncated)");
-			if (!expanded) return makeText(ctx.lastComponent, withBranch(`${text}${theme.fg("muted", " • Ctrl+O to expand")}`, theme));
+			if (!expanded) return makeText(ctx.lastComponent, withBranch(`${text}${theme.fg("muted", " (ctrl+o to expand)")}`, theme));
 			text += `\n${buildPreviewText(matches.map((line) => theme.fg("dim", line)), false, theme, previewLimit())}`;
 			return makeText(ctx.lastComponent, withBranch(text, theme));
 		},
@@ -4790,7 +4980,7 @@ export default function (pi: ExtensionAPI) {
 				.filter((line) => line.trim().length > 0);
 			if (items.length === 0) return makeText(ctx.lastComponent, withBranch(theme.fg("muted", "no files found"), theme));
 			let text = theme.fg("muted", `${items.length} files`);
-			if (!expanded) return makeText(ctx.lastComponent, withBranch(`${text}${theme.fg("muted", " • Ctrl+O to expand")}`, theme));
+			if (!expanded) return makeText(ctx.lastComponent, withBranch(`${text}${theme.fg("muted", " (ctrl+o to expand)")}`, theme));
 			// Expanded: grouped find results with icons
 			const maxShow = previewLimit();
 			const shown = items.slice(0, maxShow);
@@ -4835,7 +5025,7 @@ export default function (pi: ExtensionAPI) {
 				.filter((line) => line.trim().length > 0);
 			if (items.length === 0) return makeText(ctx.lastComponent, withBranch(theme.fg("muted", "empty directory"), theme));
 			let text = theme.fg("muted", `${items.length} entries`);
-			if (!expanded) return makeText(ctx.lastComponent, withBranch(`${text}${theme.fg("muted", " • Ctrl+O to expand")}`, theme));
+			if (!expanded) return makeText(ctx.lastComponent, withBranch(`${text}${theme.fg("muted", " (ctrl+o to expand)")}`, theme));
 			// Expanded: tree-view with icons
 			const maxShow = previewLimit();
 			const shown = items.slice(0, maxShow);
@@ -4891,13 +5081,9 @@ export default function (pi: ExtensionAPI) {
 			const fp = args?.path ?? (args as any)?.file_path ?? "";
 			const revealSummary = shouldRevealCallArgs(ctx) || (!!fp && hasOwnArg(args, "content"));
 			syncToolCallStatus(ctx);
-			const wasNew = getWriteWasNewFile(ctx, cwd, fp, revealSummary);
-			const label = wasNew === true ? "Create" : "Write";
-			const summary = stableCallSummary(ctx, "_callSummary", () => {
-				const base = sp(fp);
-				return shouldRevealCallArgs(ctx) ? `${base} ${theme.fg("muted", `(${lineCount(args.content ?? "")} lines)`)}` : base;
-			}, revealSummary);
-			const hdr = toolHeader(label, summary, theme, toolStatusDot(ctx, theme));
+			// Claude Code labels both new and existing files "Write" — no "Create".
+			const summary = stableCallSummary(ctx, "_callSummary", () => sp(fp), revealSummary);
+			const hdr = toolHeader("Write", summary, theme, toolStatusDot(ctx, theme));
 			return makeText(ctx.lastComponent, hdr);
 		},
 		renderResult(result, { isPartial }, theme, ctx) {
@@ -4922,7 +5108,7 @@ export default function (pi: ExtensionAPI) {
 				const hunks = d.diff?.lines?.filter((l: any) => l.type === "sep").length + (d.diff?.lines?.length ? 1 : 0);
 				const diffWidth = branchDiffWidth();
 				const mode = shouldUseSplit(d.diff, diffWidth, previewLines) ? "split" : "unified";
-				const richSummary = diffSummaryWithMeta(d.diff.added, d.diff.removed, hunks, mode);
+				const richSummary = theme.fg("muted", describeWrite(writtenLineCount(ctx.args?.content ?? ""), sp(ctx.args?.path ?? (ctx.args as any)?.file_path ?? "")));
 				const key = `wd:${diffWidth}:${d.summary}:${d.diff?.lines?.length ?? 0}:${d.language ?? ""}:${ctx.expanded ? 1 : 0}`;
 				if (ctx.state._wdk !== key) {
 					ctx.state._wdk = key;
@@ -4945,10 +5131,10 @@ export default function (pi: ExtensionAPI) {
 			if (d?._type === "noChange") return makeText(ctx.lastComponent, withBranch(theme.fg("muted", "✓ no changes"), theme));
 			if (d?._type === "new") {
 				const content = typeof ctx.args?.content === "string" ? ctx.args.content : "";
-				const lineTotal = typeof d.lines === "number" ? d.lines : lineCount(content);
+				const lineTotal = writtenLineCount(content);
 				const contentHash = hashText(content);
 				const syntheticDiff = getCachedParsedDiff(ctx, `nf-diff:${d.filePath}:${contentHash}`, "", content);
-				const richSummary = diffSummaryWithMeta(syntheticDiff.added, 0, 1, "new file");
+				const richSummary = theme.fg("muted", describeWrite(lineTotal, sp(d.filePath ?? "")));
 				const previewLines = ctx.expanded ? MAX_RENDER_LINES : diffCollapsedLimit();
 				const diffWidth = branchDiffWidth();
 				const pk = `nf:${d.filePath}:${contentHash}:${diffWidth}:${ctx.expanded ? 1 : 0}`;
@@ -4956,7 +5142,10 @@ export default function (pi: ExtensionAPI) {
 					ctx.state._nfk = pk;
 					ctx.state._nft = withFinalBranchBlock(`${richSummary}\n${theme.fg("muted", "rendering diff…")}`, theme);
 					const dc = resolveDiffColors(theme);
-					renderUnified(syntheticDiff, lang(d.filePath), previewLines, dc, diffWidth)
+					const body = claudeDiffPaletteEnabled()
+						? renderFileListing(content, lang(d.filePath), previewLines, diffWidth)
+						: renderUnified(syntheticDiff, lang(d.filePath), previewLines, dc, diffWidth);
+					body
 						.then((rendered) => {
 							if (ctx.state._nfk !== pk) return;
 							ctx.state._nft = withFinalBranchBlock(`${richSummary}\n${rendered}`, theme);
@@ -4964,11 +5153,11 @@ export default function (pi: ExtensionAPI) {
 						})
 						.catch(() => {
 							if (ctx.state._nfk !== pk) return;
-							ctx.state._nft = withBranch(`${richSummary} ${theme.fg("muted", `(${lineTotal} lines)`)}`, theme);
+							ctx.state._nft = withBranch(richSummary, theme);
 							ctx.invalidate();
 						});
 				}
-				return makeText(ctx.lastComponent, ctx.state._nft ?? withBranch(`${richSummary} ${theme.fg("muted", `(${lineTotal} lines)`)}`, theme));
+				return makeText(ctx.lastComponent, ctx.state._nft ?? withBranch(richSummary, theme));
 			}
 			return makeText(ctx.lastComponent, withBranch(theme.fg("success", "Written"), theme));
 		},
@@ -5021,7 +5210,7 @@ export default function (pi: ExtensionAPI) {
 			const revealSummary = shouldRevealCallArgs(ctx) || (!!fp && hasOwnArg(args, "edits"));
 			const summary = stableCallSummary(ctx, "_callSummary", () => shouldRevealCallArgs(ctx) && operations.length > 1 ? `${sp(fp)} ${theme.fg("muted", `(${operations.length} edits)`)}` : sp(fp), revealSummary);
 			syncToolCallStatus(ctx);
-			const hdr = toolHeader("Edit", summary, theme, toolStatusDot(ctx, theme));
+			const hdr = toolHeader("Update", summary, theme, toolStatusDot(ctx, theme));
 			if (!(ctx.argsComplete && operations.length > 0)) return makeText(ctx.lastComponent, hdr);
 			const diffWidth = branchDiffWidth();
 			const key = `edit:${fp}:${hashText(operations.map((edit) => `${edit.oldText}\u0000${edit.newText}`).join("\u0001"))}:${diffWidth}:${ctx.expanded ? 1 : 0}`;
@@ -5061,16 +5250,14 @@ export default function (pi: ExtensionAPI) {
 						.join("\n") ?? "Error";
 				return makeText(ctx.lastComponent, indentBranchBlock(withBranch(theme.fg("error", e), theme)));
 			}
+			// renderCall already emitted "Added N lines, removed M lines" above the diff.
+			// Repeating it here is what produced a duplicate ⎿ row.
 			if ((result as any).details?._type === "editInfo") {
-				const { editLine, hunks, added, removed } = (result as any).details;
-				const loc = formatLineMeta(editLine ?? 0, theme);
-				const summary = diffSummaryWithMeta(added ?? 0, removed ?? 0, hunks ?? 0, "");
-				return makeText(ctx.lastComponent, indentBranchBlock(withBranch(`${summary}${loc}`, theme)));
+				return makeText(ctx.lastComponent, "");
 			}
 			if ((result as any).details?._type === "multiEditInfo") {
-				const { editCount, diffLineCount, hunks, totalAdded, totalRemoved } = (result as any).details;
-				const summary = diffSummaryWithMeta(totalAdded ?? 0, totalRemoved ?? 0, hunks ?? 0, "");
-				return makeText(ctx.lastComponent, indentBranchBlock(withBranch(`${editCount} edits ${summary}${typeof diffLineCount === "number" ? ` ${theme.fg("muted", `(${diffLineCount} diff lines)`)}` : ""}`, theme)));
+				const { editCount } = (result as any).details;
+				return makeText(ctx.lastComponent, editCount > 1 ? withBranch(theme.fg("muted", `${editCount} edits`), theme) : "");
 			}
 			return makeText(ctx.lastComponent, indentBranchBlock(withBranch(theme.fg("success", "Applied"), theme)));
 		},

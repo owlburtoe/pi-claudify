@@ -26,9 +26,37 @@ export interface TranscriptLineOptions {
 
 export const DEFAULT_HIDDEN_THINKING_LABEL = "Pondering...";
 
+/** Claude Code prefixes user messages with ❯ and no box. */
+export const DEFAULT_USER_PREFIX = "❯";
+
+const WORKED_GLYPH = "✻";
+
+/**
+ * Claude Code names each finished turn with a past-tense cooking verb —
+ * "✻ Cooked for 8s", "✻ Sautéed for 11s", "✻ Baked for 4s".
+ */
+const WORKED_VERBS = [
+	"Cooked",
+	"Sautéed",
+	"Baked",
+	"Simmered",
+	"Braised",
+	"Roasted",
+	"Seared",
+	"Whisked",
+	"Brewed",
+	"Glazed",
+	"Kneaded",
+	"Poached",
+	"Steeped",
+	"Stewed",
+	"Caramelized",
+	"Reduced",
+] as const;
+
 const DEFAULT_MESSAGE_CHROME: MessageChromeSettings = {
 	messageStyle: "claude",
-	assistantPrefix: "●",
+	assistantPrefix: "⏺",
 	thinkingPrefix: "✻",
 	messageSpacing: "comfortable",
 	hiddenThinkingLabel: DEFAULT_HIDDEN_THINKING_LABEL,
@@ -113,7 +141,7 @@ export function formatTranscriptLines(lines: string[], options: TranscriptLineOp
 	const prefixGlyph = sanitizeMessagePrefix(options.prefix, DEFAULT_MESSAGE_CHROME.assistantPrefix);
 	const spacing = options.spacing ?? DEFAULT_MESSAGE_CHROME.messageSpacing;
 	const normalized = normalizeTranscriptRenderedLines(lines, spacing);
-	const prefix = ` ${prefixGlyph} `;
+	const prefix = `${prefixGlyph} `;
 	const measureWidth = options.visibleWidth ?? fallbackVisibleWidth;
 	const continuation = " ".repeat(Math.max(1, measureWidth(prefix)));
 
@@ -128,4 +156,55 @@ export function formatTranscriptLines(lines: string[], options: TranscriptLineOp
 		}
 		return `${continuation}${displayLine}`;
 	});
+}
+
+export interface WorkedLineOptions {
+	/** Stable per-turn value so a repaint does not re-roll the verb. */
+	seed?: number;
+	/** Live state appended after a separator, e.g. "1 shell still running". */
+	suffix?: string;
+}
+
+/** "8s", "1m 25s", "1h 3m 5s", "2d 1h 4m". */
+export function formatWorkedDuration(ms: number): string {
+	const safeMs = Math.max(0, Number.isFinite(ms) ? ms : 0);
+	if (safeMs < 60_000) {
+		return `${Math.max(0, Math.floor(safeMs / 1000))}s`;
+	}
+	let days = Math.floor(safeMs / 86_400_000);
+	let hours = Math.floor((safeMs % 86_400_000) / 3_600_000);
+	let minutes = Math.floor((safeMs % 3_600_000) / 60_000);
+	let seconds = Math.round((safeMs % 60_000) / 1000);
+	if (seconds === 60) {
+		seconds = 0;
+		minutes++;
+	}
+	if (minutes === 60) {
+		minutes = 0;
+		hours++;
+	}
+	if (hours === 24) {
+		hours = 0;
+		days++;
+	}
+	if (days > 0) return `${days}d ${hours}h ${minutes}m`;
+	if (hours > 0) return `${hours}h ${minutes}m ${seconds}s`;
+	return `${minutes}m ${seconds}s`;
+}
+
+/**
+ * Matches a worked line under any verb in the pool. The verb rotates per turn,
+ * so callers that strip these lines out of model context cannot match on a
+ * fixed "Worked for" marker.
+ */
+export function isWorkedLine(line: string): boolean {
+	return new RegExp(`^${WORKED_GLYPH} (?:${WORKED_VERBS.join("|")}) for [^\\r\\n]+$`).test(line.trim());
+}
+
+export function formatWorkedLine(durationMs: number, options: WorkedLineOptions = {}): string {
+	const seed = Number.isFinite(options.seed) ? Math.abs(Math.trunc(options.seed as number)) : 0;
+	const verb = WORKED_VERBS[seed % WORKED_VERBS.length];
+	const line = `${WORKED_GLYPH} ${verb} for ${formatWorkedDuration(durationMs)}`;
+	const suffix = typeof options.suffix === "string" ? options.suffix.trim() : "";
+	return suffix ? `${line} · ${suffix}` : line;
 }

@@ -5,12 +5,13 @@ Claude Code inspired tool rendering for Pi — Shiki-powered diffs, status dots,
 ## Features
 
 - **Compact Claude Code-like tool rendering** for `read`, `bash`, `grep`, `find`, `ls`, `edit`, and `write`, including `⏺ Tool(args)` headers and `⎿` result rows
+- **Transcript grammar matched to Claude Code v2.1.207**, captured live rather than reconstructed — `❯` user rows with no box, `⏺` bullets at column 0, `␣␣⎿␣␣` result gutters, `(ctrl+o to expand)` hints, and `✻ Cooked for 8s` worked lines. See [docs/plans/2026-07-13-current-cc-grammar.md](docs/plans/2026-07-13-current-cc-grammar.md)
 - **Semantic bash display** that renders common read-only shell one-liners like `nl -ba file | sed -n '1,200p'` as Claude Code-style `Read file (lines 1-200)` rows
-- **Read-only inspection grouping** that collapses consecutive `read`/`grep`/`find`/`ls` rows into one Claude-style `Inspect` block, capped to five visible entries by default
+- **Aggregated read-only tools** under a gerund header (`⏺ Searching for 1 pattern, reading 2 files…`) with one `⎿` per target, collapsing to a dim `Read 1 file, ran 1 shell command` once the turn settles — the model current Claude Code uses
 - **Claude-style OpenAI tool rendering** for `apply_patch` plus common Pi/OpenAI-style tools like `webfetch`, `web_search`, `fetch_content`, task tools, and context tools
 - **`apply_patch` diff previews** that render parsed file patches in the call phase, similar to `edit`/`write`
-- **Adaptive edit/write diffs** with split or unified layouts, syntax highlighting, and inline word-level emphasis
-- **Diff stat bar** with colored add/remove summary and hunk metadata
+- **Claude Code diff bodies** — unified hunks with a ` N ` gutter and sign column, no box chrome, Claude's exact red/green palette, brighter backgrounds on changed tokens, and unhighlighted removals; writes render as a plain numbered listing
+- **Sentence result rows** (`Wrote 3 lines to <path>`, `Added 2 lines, removed 2 lines`) instead of stat bars
 - **Progressive collapsed diff hints** that shorten on narrow terminals
 - **Thinking labels** during streaming and final messages, with context sanitization
 - **Claude-style transcript grammar controls** for assistant/thinking prefixes, message spacing, and hidden thinking labels
@@ -40,12 +41,13 @@ Set in `.pi/settings.json` or `~/.pi/settings.json`:
   "readOnlyToolGroupLimit": 5,
   "diffCollapsedLines": 24,
   "themeAdaptive": true,
-  "diffTheme": "github-dark",
+  "diffPalette": "claude",
+  "diffTheme": "monokai",
   "spinnerColor": "borderAccent",
   "spinnerVerbs": ["Reviewing", "Polishing"],
   "spinnerVerbMode": "append",
   "messageStyle": "claude",
-  "assistantPrefix": "●",
+  "assistantPrefix": "⏺",
   "thinkingPrefix": "✻",
   "messageSpacing": "comfortable",
   "hiddenThinkingLabel": "Pondering..."
@@ -60,16 +62,28 @@ When `themeAdaptive` is `true` (default), the following colors are derived from 
 |---------|--------------|
 | Tool outline borders (top/bottom rules) | `borderMuted` |
 | Branch connectors (`├─`, `└─`, `│`) | `dim` (fallback: `muted`) |
-| "✻ Worked for Ns" line | `muted` |
+| "✻ Cooked for 8s" worked line | `muted` |
 | Thinking-block italic gray | `muted` |
-| Diff add/remove accents | `toolDiffAdded` / `toolDiffRemoved` |
-| Diff background tints | mixed against `toolSuccessBg` base |
+| Diff add/remove accents | `toolDiffAdded` / `toolDiffRemoved` (only when `diffPalette: "theme"`) |
+| Diff background tints | mixed against `toolSuccessBg` base (only when `diffPalette: "theme"`) |
 | Spinner glyph + verb text (`✻ Working…`) | `borderAccent` (fallback: `accent`) |
 | Spinner status text | `muted` |
 
 User-supplied `diffTheme` presets and `diffColors` overrides always win over theme-derived defaults. File-type icons (e.g. `ts`, `py`, `rs`) keep their language-identity colors and are not theme-derived.
 
 Set `themeAdaptive: false` to keep the original fixed Claude-style palette regardless of the active pi theme.
+
+### Diff palette
+
+`diffPalette` defaults to `"claude"`: diffs render exactly as Claude Code does — always
+unified, no box chrome, and a fixed palette taken from Claude Code's own output
+(removed `#3D0100` on `#DC5A5A`, added `#022800` on `#50C850`, with brighter
+backgrounds on the changed token). Removed lines are intentionally not
+syntax-highlighted, matching Claude Code. Pair it with `diffTheme: "monokai"` for
+Claude's syntax colors.
+
+Set `diffPalette: "theme"` to restore the theme-derived tints and the adaptive
+split/unified layout.
 
 #### Toggle at runtime with `/cc-theme`
 
@@ -151,7 +165,7 @@ Color selections are persisted as `spinnerColor` / `spinnerStatusColor` in `~/.p
 |---------|---------|-------------|
 | `bashStackConsecutive` | `true` | Remove the extra synthetic spacer between adjacent bash tool rows so command bursts render as a tight stack |
 | `bashSemanticDisplay` | `true` | Render common read-only shell file-inspection commands as semantic `Read` rows instead of raw `Bash` rows |
-| `readOnlyToolGrouping` | `true` | Collapse adjacent read-only inspection tools into one `Inspect` block; mutating `write`/`edit`/`apply_patch` rows stay independent |
+| `readOnlyToolGrouping` | `true` | Aggregate adjacent read-only tools (`read`/`grep`/`find`/`ls`/`bash`) under one gerund header, collapsing to a dim past-tense summary once they settle; mutating `write`/`edit`/`apply_patch` rows stay independent |
 
 ### Numeric settings
 
