@@ -1,6 +1,6 @@
 {
   "name": "@owlburtoe/pi-cc-tools",
-  "version": "1.1.3",
+  "version": "1.1.6",
   "description": "Claude Code-style tool rows for pi with Ctrl+O image previews and consistent built-in, MCP, and custom tool rendering",
   "keywords": [
     "pi-package",
@@ -24,16 +24,22 @@
     "url": "https://forgejo.owlburtoe.dev/owlburtoe/pi-claude-style-tools/issues"
   },
   "files": [
-    "extensions/index.ts",
-    "extensions/spinner.ts",
-    "extensions/message-chrome.ts",
+    "README.md",
     "config/config.example.json",
-    "README.md"
+    "extensions/index.ts",
+    "extensions/inspection-summary.ts",
+    "extensions/message-chrome.ts",
+    "extensions/mutation-summary.ts",
+    "extensions/spinner.ts"
   ],
   "scripts": {
     "bench:tools": "bun scripts/benchmark-tools.ts",
     "test:bash-display": "bun scripts/test-bash-display.ts",
-    "test:message-chrome": "bun scripts/test-message-chrome.ts"
+    "test:message-chrome": "bun scripts/test-message-chrome.ts",
+    "test:diff-body": "bun scripts/test-diff-body.ts",
+    "test:inspection-summary": "bun scripts/test-inspection-summary.ts",
+    "test:mutation-summary": "bun scripts/test-mutation-summary.ts",
+    "test": "bun scripts/test-message-chrome.ts && bun scripts/test-bash-display.ts && bun scripts/test-inspection-summary.ts && bun scripts/test-mutation-summary.ts && bun scripts/test-diff-body.ts"
   },
   "dependencies": {
     "@shikijs/cli": "^4.0.2",

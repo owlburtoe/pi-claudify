@@ -536,18 +536,20 @@ export default function (pi: ExtensionAPI) {
 		const tokenCount = Math.max(0, Math.round(responseLength / 4));
 		const statusParts: string[] = [];
 
-		if (thinkingStatus === "thinking") {
-			statusParts.push(`thinking${getEffortSuffix()}`);
-		} else if (typeof thinkingStatus === "number") {
-			statusParts.push(`thought for ${Math.max(1, Math.round(thinkingStatus / 1000))}s`);
+		// Claude Code orders the status list duration → tokens → thinking, e.g.
+		// "✽ Gathering the Fellowship… (3s · ↓ 162 tokens · thought for 1s)".
+		if (elapsed > SHOW_TIMER_AFTER_MS || thinkingStatus !== null || tokenCount > 0) {
+			statusParts.push(formatDuration(elapsed));
 		}
 
 		if (tokenCount > 0) {
 			statusParts.push(`↓ ${formatCount(tokenCount)} tokens`);
 		}
 
-		if (elapsed > SHOW_TIMER_AFTER_MS || thinkingStatus !== null || tokenCount > 0) {
-			statusParts.push(formatDuration(elapsed));
+		if (thinkingStatus === "thinking") {
+			statusParts.push(`thinking${getEffortSuffix()}`);
+		} else if (typeof thinkingStatus === "number") {
+			statusParts.push(`thought for ${Math.max(1, Math.round(thinkingStatus / 1000))}s`);
 		}
 
 		let message = `${CLAUDE_ORANGE}${currentVerb}…${RESET}`;

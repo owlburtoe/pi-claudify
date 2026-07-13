@@ -113,6 +113,24 @@ function completedTool(pi: FakePi, name: string, id: string, args: any, text: st
 	return component;
 }
 
+/** Dispatched but not yet settled — the group must stay expanded. */
+function runningTool(pi: FakePi, name: string, id: string, args: any): ToolExecutionComponent {
+	const tool = pi.tools.get(name);
+	assert.ok(tool, `${name} tool registered`);
+	const component = new ToolExecutionComponent(
+		name,
+		id,
+		args,
+		{ showImages: false },
+		tool,
+		{ requestRender() {}, previousLines: [] } as any,
+		process.cwd(),
+	);
+	component.markExecutionStarted();
+	component.setArgsComplete();
+	return component;
+}
+
 initTheme("dark", false);
 const pi = new FakePi();
 extension(pi as any);
@@ -135,7 +153,7 @@ component.updateResult({
 	details: {},
 } as any, false);
 
-const rendered = component.render(120).map((line) => line.replace(/\x1b\[[0-9;]*m/g, "")).join("\n");
+const rendered = component.render(120).map((line) => line.replace(/\x1b\[[0-9;]*m/g, "").replace(/\s+$/, "")).join("\n");
 assert.match(rendered, /⏺ Read\(apps\/backend\/src\/lib\/notification-unsubscribe\.ts \(lines 1-200\)\)/);
 assert.match(rendered, /⎿  Read 2 lines/);
 assert.doesNotMatch(rendered, /Bash nl -ba/);
@@ -151,13 +169,35 @@ groupedContainer.addChild(completedTool(pi, "grep", "grep-two", { pattern: "gamm
 groupedContainer.addChild(completedTool(pi, "read", "read-three", { path: "src/three.ts" }, "delta"));
 groupedContainer.addChild(completedTool(pi, "write", "write-one", { path: "src/write.ts", content: "next\n" }, "ok", { _type: "new", lines: 2, filePath: "src/write.ts" }));
 
-const groupedRendered = groupedContainer.render(120).map((line) => line.replace(/\x1b\[[0-9;]*m/g, "")).join("\n");
-assert.match(groupedRendered, /⏺ Inspect\(6 tool uses\)/);
-assert.match(groupedRendered, /⎿  Read src\/one\.ts — 2 lines loaded/);
-assert.match(groupedRendered, /Grep "alpha" in src — 2 matches/);
-assert.match(groupedRendered, /Find "\*\.ts" in src — 3 files/);
-assert.match(groupedRendered, /… 1 more inspection/);
+const groupedRendered = groupedContainer.render(120).map((line) => line.replace(/\x1b\[[0-9;]*m/g, "").replace(/\s+$/, "")).join("\n");
+
+// Every read-only tool has settled, so Claude Code collapses the whole block to a
+// single dim past-tense line with no bullet. Grammar:
+// docs/plans/2026-07-13-current-cc-grammar.md
+assert.match(groupedRendered, /^ {2}Searched for 2 patterns, found 1 file, read 3 files$/m);
+assert.doesNotMatch(groupedRendered, /Inspect\(/);
+assert.doesNotMatch(groupedRendered, /tool uses/);
+assert.doesNotMatch(groupedRendered, /lines loaded/);
 assert.doesNotMatch(groupedRendered, /^⏺ Read\(src\/one\.ts\)/m);
-assert.doesNotMatch(groupedRendered, /^⏺ Grep\("alpha"/m);
-assert.match(groupedRendered, /⏺ Create\(src\/write\.ts/);
+
+// Mutating tools keep their own row and never join the group.
+// The label is Write (never "Create") and the result is a sentence.
+assert.match(groupedRendered, /^⏺ Write\(src\/write\.ts\)/m);
+// "next\n" is one line — the trailing newline terminates it, it does not add a line.
+assert.match(groupedRendered, /⎿ {2}Wrote 1 line to src\/write\.ts/);
+assert.doesNotMatch(groupedRendered, /⏺ Create\(/);
+
+// While tools are still running the group stays expanded: gerund header, one ⎿ per
+// target, bare paths, `$ cmd` for shell.
+const activeContainer = new Container();
+activeContainer.addChild(runningTool(pi, "read", "run-read", { path: "src/one.ts" }));
+activeContainer.addChild(runningTool(pi, "read", "run-read-2", { path: "src/two.ts" }));
+activeContainer.addChild(runningTool(pi, "bash", "run-bash", { command: "git log --oneline -3" }));
+
+const activeRendered = activeContainer.render(120).map((line) => line.replace(/\x1b\[[0-9;]*m/g, "").replace(/\s+$/, "")).join("\n");
+assert.match(activeRendered, /^⏺ Reading 2 files, running 1 shell command…$/m);
+assert.match(activeRendered, /^ {2}⎿ {2}src\/one\.ts$/m);
+assert.match(activeRendered, /^ {2}⎿ {2}src\/two\.ts$/m);
+assert.match(activeRendered, /^ {2}⎿ {2}\$ git log --oneline -3$/m);
+
 console.log("bash display tests passed");
