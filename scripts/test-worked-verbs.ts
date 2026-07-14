@@ -4,8 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 // Isolate settings writes: writeSettingsKey persists to $HOME/.pi/settings.json.
+// readSettings prefers $CWD/.pi/settings.json, so the cwd has to move into the
+// sandbox too — otherwise a developer's own .pi/settings.json shadows it and
+// every write reads its verbs back from the wrong file.
 const sandbox = mkdtempSync(join(tmpdir(), "cc-verbs-"));
 process.env.HOME = sandbox;
+process.chdir(sandbox);
 
 const { default: extension } = await import("../extensions/index.ts");
 const { formatWorkedLine, resolveWorkedVerbs, DEFAULT_WORKED_VERBS } = await import("../extensions/message-chrome.ts");
