@@ -174,7 +174,11 @@ const groupedRendered = groupedContainer.render(120).map((line) => line.replace(
 // Every read-only tool has settled, so Claude Code collapses the whole block to a
 // single dim past-tense line with no bullet. Grammar:
 // docs/plans/2026-07-13-current-cc-grammar.md
-assert.match(groupedRendered, /^ {2}Searched for 2 patterns, found 1 file, read 3 files$/m);
+//
+// The glob (`find`) counts as a *pattern*, not a clause of its own — Claude Code
+// folds Glob into grep's clause. Captured side by side against pi:
+// docs/plans/2026-07-14-tool-row-conformance-audit.md
+assert.match(groupedRendered, /^ {2}Searched for 3 patterns, read 3 files$/m);
 assert.doesNotMatch(groupedRendered, /Inspect\(/);
 assert.doesNotMatch(groupedRendered, /tool uses/);
 assert.doesNotMatch(groupedRendered, /lines loaded/);

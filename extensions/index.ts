@@ -459,20 +459,18 @@ function isMcpToolExecution(value: unknown): boolean {
 }
 
 /**
- * A lone read or shell command keeps its own `⏺ Tool(arg)` row, so grouping only
- * engages for a run of two. A lone *MCP* call has no row of its own to fall back
- * on — Claude Code renders even a single one as `⏺ Calling probe…` — so one is
- * enough to engage the group.
+ * Claude Code aggregates read-only tools at *any* count — a single read renders as
+ * `⏺ Reading 1 file…` and collapses to `Read 1 file`, never as `⏺ Read(path)`.
+ * One groupable child is therefore enough to engage the group.
+ *
+ * Expanding a tool (ctrl+o) drops it out of the group via
+ * isReadOnlyInspectionToolExecution, which is how the hidden detail — the full
+ * path, command, or pattern — is brought back. Claude Code does the same on click.
+ *
+ * Captured: docs/plans/2026-07-14-tool-row-conformance-audit.md
  */
 function hasConsecutiveReadOnlyInspectionToolChildren(children: unknown[]): boolean {
-	let previousWasInspect = false;
-	for (const child of children) {
-		if (isMcpToolExecution(child) && isReadOnlyInspectionToolExecution(child)) return true;
-		const currentIsInspect = isReadOnlyInspectionToolExecution(child);
-		if (currentIsInspect && previousWasInspect) return true;
-		previousWasInspect = currentIsInspect;
-	}
-	return false;
+	return children.some(isReadOnlyInspectionToolExecution);
 }
 
 function plural(count: number, noun: string): string {
@@ -521,11 +519,10 @@ function readInspectionTarget(value: unknown): string {
 	return `${shortPath(componentCwd(value), rec.args?.path ?? "")}${formatOffsetLimit(rec.args)}`;
 }
 
+/** Claude Code shows the bare quoted pattern — never the search path. */
 function grepInspectionTarget(value: unknown): string {
 	const rec = toolComponentRecord(value);
-	const pattern = summarizeText(rec.args?.pattern ?? "", 40);
-	const path = rec.args?.path ? ` in ${shortPath(componentCwd(value), rec.args.path)}` : "";
-	return `"${pattern}"${path}`;
+	return `"${summarizeText(rec.args?.pattern ?? "", 40)}"`;
 }
 
 function findInspectionTarget(value: unknown): string {
@@ -620,7 +617,9 @@ function inspectionKind(value: unknown): InspectionKind {
 	const rec = toolComponentRecord(value);
 	if (rec.toolName === "read") return "read";
 	if (rec.toolName === "grep") return "grep";
-	if (rec.toolName === "find") return "find";
+	// Claude Code folds Glob into the grep clause — a glob for `src/*.ts` renders
+	// as "Searching for 1 pattern" with ⎿ "src/*.ts", not a clause of its own.
+	if (rec.toolName === "find") return "grep";
 	if (rec.toolName === "ls") return "ls";
 	if (isMcpToolName(rec.toolName)) return "mcp";
 	return "bash";
@@ -689,17 +688,9 @@ function renderWithGroupedReadOnlyInspectionTools(container: any, width: number)
 	let previousWasBash = false;
 	const flushGroup = () => {
 		if (group.length === 0) return;
-		// A lone MCP call still renders as the aggregate line — it has no row of its own.
-		if (group.length === 1 && !isMcpToolExecution(group[0])) {
-			const child = group[0] as any;
-			const currentIsBash = isBashToolExecution(child);
-			const childLines = typeof child?.render === "function" ? child.render(width) : [];
-			rendered.push(...(currentIsBash && previousWasBash ? dropLeadingSpacerLine(childLines) : childLines));
-			previousWasBash = currentIsBash;
-		} else {
-			rendered.push(...renderInspectionGroup(group, width));
-			previousWasBash = false;
-		}
+		// Even a lone read-only tool renders as the aggregate — it has no row of its own.
+		rendered.push(...renderInspectionGroup(group, width));
+		previousWasBash = false;
 		group = [];
 	};
 
@@ -5217,7 +5208,12 @@ export default function (pi: ExtensionAPI) {
 			const content = result.content.find((block: any) => block?.type === "text");
 			if (content?.type !== "text") return makeText(ctx.lastComponent, withBranch(theme.fg("error", "No text content"), theme));
 			const lines = content.text.split("\n");
-			let text = theme.fg("muted", `${lines.length} lines loaded`);
+			// A failed read is not content: reporting it as "1 line loaded" hides the error.
+			if (ctx.isError) {
+				const preview = buildPreviewText(lines.map((line) => theme.fg("error", line || " ")), expanded, theme, previewLimit());
+				return makeText(ctx.lastComponent, withBranch(preview, theme));
+			}
+			let text = theme.fg("muted", `${plural(lines.length, "line")} loaded`);
 			if (details?.truncation?.truncated) text += theme.fg("warning", " (truncated)");
 			if (!expanded) return makeText(ctx.lastComponent, withBranch(`${text}${theme.fg("muted", " (ctrl+o to expand)")}`, theme));
 			const shown = lines.slice(0, previewLimit());
