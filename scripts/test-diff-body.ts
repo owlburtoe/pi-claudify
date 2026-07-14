@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 
-import { initTheme } from "../node_modules/@mariozechner/pi-coding-agent/dist/modes/interactive/theme/theme.js";
+import { initTheme } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
 
 import { parseDiff, renderFileListing, renderUnified } from "../extensions/index.ts";
 

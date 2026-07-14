@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 
-import { ToolExecutionComponent } from "@mariozechner/pi-coding-agent";
-import { Container } from "@mariozechner/pi-tui";
-import { initTheme } from "../node_modules/@mariozechner/pi-coding-agent/dist/modes/interactive/theme/theme.js";
+import { ToolExecutionComponent } from "@earendil-works/pi-coding-agent";
+import { Container } from "@earendil-works/pi-tui";
+import { initTheme } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
 
 import extension, { classifyBashCommandForDisplay } from "../extensions/index.ts";
 

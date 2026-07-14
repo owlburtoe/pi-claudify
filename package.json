@@ -1,6 +1,6 @@
 {
   "name": "@owlburtoe/pi-cc-tools",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Claude Code-style tool rows for pi with Ctrl+O image previews and consistent built-in, MCP, and custom tool rendering",
   "keywords": [
     "pi-package",
@@ -44,12 +44,13 @@
     "test:tool-chrome": "bun scripts/test-tool-chrome.ts"
   },
   "dependencies": {
-    "@shikijs/cli": "^4.0.2",
-    "diff": "^7.0.0"
+    "@shikijs/cli": "^4.3.1",
+    "diff": "^9.0.0",
+    "shiki": "^4.3.1"
   },
   "peerDependencies": {
-    "@mariozechner/pi-coding-agent": "*",
-    "@mariozechner/pi-tui": "*",
+    "@earendil-works/pi-coding-agent": ">=0.74.0",
+    "@earendil-works/pi-tui": ">=0.74.0",
     "@sinclair/typebox": "*"
   },
   "pi": {
@@ -59,10 +60,9 @@
     ]
   },
   "devDependencies": {
-    "@mariozechner/pi-coding-agent": "latest",
-    "@mariozechner/pi-tui": "latest",
+    "@earendil-works/pi-coding-agent": "latest",
+    "@earendil-works/pi-tui": "latest",
     "@sinclair/typebox": "latest",
-    "@types/diff": "^7.0.2",
     "@types/node": "^25.6.0",
     "typescript": "^6.0.2"
   }
