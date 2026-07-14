@@ -50,7 +50,9 @@ Set in `.pi/settings.json` or `~/.pi/settings.json`:
   "assistantPrefix": "⏺",
   "thinkingPrefix": "✻",
   "messageSpacing": "comfortable",
-  "hiddenThinkingLabel": "Pondering..."
+  "hiddenThinkingLabel": "Pondering...",
+  "workedVerbs": ["Hacked", "Tinkered"],
+  "workedVerbMode": "append"
 }
 ```
 
@@ -125,13 +127,42 @@ Color selections are persisted as `spinnerColor` / `spinnerStatusColor` in `~/.p
 /cc-message style classic                # older package spacing/prefix behavior
 /cc-message spacing comfortable          # keep one blank line between paragraphs
 /cc-message spacing compact              # remove blank lines inside assistant/thinking blocks
-/cc-message assistant-prefix ●           # set assistant paragraph prefix
+/cc-message assistant-prefix ⏺           # set assistant paragraph prefix
 /cc-message thinking-prefix ✻            # set visible thinking prefix
 /cc-message hidden-thinking-label Pondering...
 /cc-message reset                        # restore message chrome defaults
 ```
 
 `messageStyle: "claude"` trims leading/trailing blank render lines, collapses paragraph gaps, and aligns wrapped assistant/thinking lines under the message body, matching Claude Code's sparse transcript grammar. `messageStyle: "classic"` keeps the previous package behavior.
+
+#### Custom worked verbs
+
+Each finished turn is named with a past-tense verb — `✻ Cooked for 8s`, `✻ Sautéed for 11s`.
+One is picked per turn and stays stable across repaints. You can supply your own:
+
+```text
+/cc-message verbs list                   # show custom verbs, mode, and the active pool
+/cc-message verbs add Hacked             # add a verb
+/cc-message verbs add Cooked up a storm  # multi-word phrases work
+/cc-message verbs remove Hacked          # remove one
+/cc-message verbs mode replace           # use ONLY your verbs
+/cc-message verbs mode append            # add yours to the built-in pool (default)
+/cc-message verbs reset                  # back to the built-in verbs
+```
+
+Or set them directly in `settings.json`:
+
+```json
+{
+  "workedVerbs": ["Hacked", "Tinkered", "Cooked up a storm"],
+  "workedVerbMode": "replace"
+}
+```
+
+`append` (the default) merges your verbs into the built-in pool; `replace` draws only from
+yours. An empty list always falls back to the built-ins, so a bad config can't leave the
+worked line verbless. This is a deliberate departure from Claude Code, which has no such
+setting.
 
 ### Tool background modes
 

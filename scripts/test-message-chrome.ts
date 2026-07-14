@@ -4,7 +4,10 @@ import {
 	DEFAULT_USER_PREFIX,
 	formatTranscriptLines,
 	formatWorkedLine,
+	isWorkedLine,
 	resolveMessageChromeSettings,
+	resolveWorkedVerbs,
+	sanitizeWorkedVerbs,
 } from "../extensions/message-chrome.ts";
 
 // Grammar target: docs/plans/2026-07-13-current-cc-grammar.md
@@ -90,5 +93,42 @@ assert.match(formatWorkedLine(85_000, { seed: 1 }), /^✻ \S+ for 1m 25s$/);
 
 // A turn must not re-roll its verb on repaint: same seed, same verb.
 assert.equal(formatWorkedLine(8000, { seed: 42 }), formatWorkedLine(8000, { seed: 42 }));
+
+// --- Custom worked verbs -----------------------------------------------------
+// Mirrors the spinnerVerbs contract: append (default) merges with the built-ins,
+// replace uses only the custom list.
+
+// "replace" uses only the custom verbs.
+const onlyMine = resolveWorkedVerbs(["Yeeted", "Vibed"], "replace");
+assert.deepEqual(onlyMine, ["Yeeted", "Vibed"]);
+assert.equal(formatWorkedLine(8000, { seed: 0, verbs: onlyMine }), "✻ Yeeted for 8s");
+assert.equal(formatWorkedLine(8000, { seed: 1, verbs: onlyMine }), "✻ Vibed for 8s");
+
+// A single custom verb pins every turn to it.
+assert.equal(formatWorkedLine(8000, { seed: 7, verbs: resolveWorkedVerbs(["Cooked up"], "replace") }), "✻ Cooked up for 8s");
+
+// "append" keeps the built-ins and adds the custom ones.
+const merged = resolveWorkedVerbs(["Yeeted"], "append");
+assert.ok(merged.includes("Cooked"), "append keeps the default pool");
+assert.ok(merged.includes("Yeeted"), "append adds the custom verb");
+
+// Empty or missing custom lists fall back to the defaults, in either mode.
+assert.ok(resolveWorkedVerbs([], "replace").includes("Cooked"));
+assert.ok(resolveWorkedVerbs(null, "append").includes("Cooked"));
+
+// Sanitizing: ANSI, control chars, blanks, non-strings and case-insensitive
+// duplicates are all dropped.
+assert.deepEqual(
+	sanitizeWorkedVerbs(["  Brewed  ", "", "brewed", "[31mYeeted", 42, null]),
+	["Brewed", "Yeeted"],
+);
+assert.deepEqual(sanitizeWorkedVerbs("not an array"), []);
+
+// A custom verb still reads as a worked line, so it gets stripped from model context.
+assert.ok(isWorkedLine("✻ Yeeted for 8s"));
+assert.ok(isWorkedLine("✻ Cooked up for 1m 25s"));
+assert.ok(isWorkedLine("✻ Cooked for 11s · 1 shell still running"));
+// Thinking rows share the ✻ glyph but are not worked lines.
+assert.ok(!isWorkedLine("✻ Planning the next step"));
 
 console.log("message chrome tests passed");

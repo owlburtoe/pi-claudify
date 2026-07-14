@@ -35,7 +35,7 @@ const WORKED_GLYPH = "✻";
  * Claude Code names each finished turn with a past-tense cooking verb —
  * "✻ Cooked for 8s", "✻ Sautéed for 11s", "✻ Baked for 4s".
  */
-const WORKED_VERBS = [
+export const DEFAULT_WORKED_VERBS: readonly string[] = [
 	"Cooked",
 	"Sautéed",
 	"Baked",
@@ -52,7 +52,52 @@ const WORKED_VERBS = [
 	"Stewed",
 	"Caramelized",
 	"Reduced",
-] as const;
+];
+
+export type WorkedVerbMode = "append" | "replace";
+
+const MAX_CUSTOM_WORKED_VERBS = 200;
+const MAX_WORKED_VERB_LENGTH = 48;
+
+export function sanitizeWorkedVerbs(value: unknown): string[] {
+	if (!Array.isArray(value)) return [];
+	const seen = new Set<string>();
+	const verbs: string[] = [];
+	for (const item of value) {
+		if (typeof item !== "string") continue;
+		const cleaned = takeGraphemes(stripControlChars(stripAnsi(item)).trim(), MAX_WORKED_VERB_LENGTH);
+		if (!cleaned) continue;
+		const key = cleaned.toLocaleLowerCase();
+		if (seen.has(key)) continue;
+		seen.add(key);
+		verbs.push(cleaned);
+		if (verbs.length >= MAX_CUSTOM_WORKED_VERBS) break;
+	}
+	return verbs;
+}
+
+/**
+ * "replace" uses only the custom verbs; "append" merges them into the built-in
+ * pool. An empty custom list always falls back to the defaults, so a bad config
+ * can never leave the worked line verbless.
+ */
+export function resolveWorkedVerbs(
+	customVerbs: readonly string[] | null | undefined,
+	mode: WorkedVerbMode = "append",
+): readonly string[] {
+	const custom = sanitizeWorkedVerbs(customVerbs ?? []);
+	if (custom.length === 0) return DEFAULT_WORKED_VERBS;
+	if (mode === "replace") return custom;
+	const seen = new Set<string>();
+	const merged: string[] = [];
+	for (const verb of [...DEFAULT_WORKED_VERBS, ...custom]) {
+		const key = verb.toLocaleLowerCase();
+		if (seen.has(key)) continue;
+		seen.add(key);
+		merged.push(verb);
+	}
+	return merged.length > 0 ? merged : DEFAULT_WORKED_VERBS;
+}
 
 const DEFAULT_MESSAGE_CHROME: MessageChromeSettings = {
 	messageStyle: "claude",
@@ -163,6 +208,8 @@ export interface WorkedLineOptions {
 	seed?: number;
 	/** Live state appended after a separator, e.g. "1 shell still running". */
 	suffix?: string;
+	/** Verb pool to draw from. Defaults to the built-in Claude Code pool. */
+	verbs?: readonly string[];
 }
 
 /** "8s", "1m 25s", "1h 3m 5s", "2d 1h 4m". */
@@ -192,18 +239,25 @@ export function formatWorkedDuration(ms: number): string {
 	return `${minutes}m ${seconds}s`;
 }
 
+// "8s", "1m 25s", "1h 3m 5s", "2d 1h 4m" — one or more count+unit pairs.
+const WORKED_DURATION_PATTERN = "\\d+[dhms](?: \\d+[dhms])*";
+
 /**
- * Matches a worked line under any verb in the pool. The verb rotates per turn,
- * so callers that strip these lines out of model context cannot match on a
- * fixed "Worked for" marker.
+ * Matches a worked line under ANY verb, including user-defined ones — callers
+ * strip these lines out of model context, so this must not be pinned to the
+ * built-in pool. Shape-matched instead: "✻ <verb> for <duration>[ · <suffix>]".
+ * Thinking rows share the ✻ glyph but never match, since they have no duration.
  */
+const WORKED_LINE_RE = new RegExp(`^${WORKED_GLYPH} .+ for ${WORKED_DURATION_PATTERN}(?: · .+)?$`);
+
 export function isWorkedLine(line: string): boolean {
-	return new RegExp(`^${WORKED_GLYPH} (?:${WORKED_VERBS.join("|")}) for [^\\r\\n]+$`).test(line.trim());
+	return WORKED_LINE_RE.test(line.trim());
 }
 
 export function formatWorkedLine(durationMs: number, options: WorkedLineOptions = {}): string {
+	const pool = options.verbs && options.verbs.length > 0 ? options.verbs : DEFAULT_WORKED_VERBS;
 	const seed = Number.isFinite(options.seed) ? Math.abs(Math.trunc(options.seed as number)) : 0;
-	const verb = WORKED_VERBS[seed % WORKED_VERBS.length];
+	const verb = pool[seed % pool.length];
 	const line = `${WORKED_GLYPH} ${verb} for ${formatWorkedDuration(durationMs)}`;
 	const suffix = typeof options.suffix === "string" ? options.suffix.trim() : "";
 	return suffix ? `${line} · ${suffix}` : line;
