@@ -446,14 +446,28 @@ function isReadOnlyInspectionToolExecution(value: unknown): boolean {
 	const rec = toolComponentRecord(value);
 	if (rec.expanded === true || componentHasImageResult(value)) return false;
 	if (rec.toolName === "read" || rec.toolName === "grep" || rec.toolName === "find" || rec.toolName === "ls") return true;
+	// Every MCP call aggregates, whatever it does. Claude Code renders a mutating
+	// or failing MCP tool exactly like a read-only one — there is no separate row.
+	if (isMcpToolName(rec.toolName)) return true;
 	// Claude Code aggregates every shell command ("running 1 shell command"), not
 	// just the ones that look like file reads.
 	return rec.toolName === "bash";
 }
 
+function isMcpToolExecution(value: unknown): boolean {
+	return isToolExecutionLike(value) && isMcpToolName(toolComponentRecord(value).toolName);
+}
+
+/**
+ * A lone read or shell command keeps its own `⏺ Tool(arg)` row, so grouping only
+ * engages for a run of two. A lone *MCP* call has no row of its own to fall back
+ * on — Claude Code renders even a single one as `⏺ Calling probe…` — so one is
+ * enough to engage the group.
+ */
 function hasConsecutiveReadOnlyInspectionToolChildren(children: unknown[]): boolean {
 	let previousWasInspect = false;
 	for (const child of children) {
+		if (isMcpToolExecution(child) && isReadOnlyInspectionToolExecution(child)) return true;
 		const currentIsInspect = isReadOnlyInspectionToolExecution(child);
 		if (currentIsInspect && previousWasInspect) return true;
 		previousWasInspect = currentIsInspect;
@@ -608,7 +622,13 @@ function inspectionKind(value: unknown): InspectionKind {
 	if (rec.toolName === "grep") return "grep";
 	if (rec.toolName === "find") return "find";
 	if (rec.toolName === "ls") return "ls";
+	if (isMcpToolName(rec.toolName)) return "mcp";
 	return "bash";
+}
+
+/** Servers addressed by the group's MCP calls, in first-seen order. */
+function mcpServersInGroup(group: unknown[]): string[] {
+	return group.filter(isMcpToolExecution).map(mcpServerForComponent);
 }
 
 /**
@@ -628,8 +648,8 @@ function summarizeReadOnlyInspectionTool(value: unknown): string {
  * Once every tool in the group has settled, Claude Code drops the header and the
  * ⎿ rows and leaves a single dim past-tense line, indented, with no bullet.
  */
-function renderCollapsedInspectionGroup(kinds: InspectionKind[], width: number): string[] {
-	const summary = `${CLAUDE_COLLAPSED_INDENT}${WORKED_LINE_FG}${describeInspectionsDone(kinds)}${RESET}`;
+function renderCollapsedInspectionGroup(kinds: InspectionKind[], servers: string[], width: number): string[] {
+	const summary = `${CLAUDE_COLLAPSED_INDENT}${WORKED_LINE_FG}${describeInspectionsDone(kinds, servers)}${RESET}`;
 	const core = wrapMarkedLine(summary, width).map((line) => padToWidth(line, width));
 	if (toolBackgroundMode === "outlines") return [" ".repeat(width), borderLine(width), ...core, borderLine(width)];
 	if (toolBackgroundMode === "transparent") return [" ".repeat(width), ...core];
@@ -638,13 +658,16 @@ function renderCollapsedInspectionGroup(kinds: InspectionKind[], width: number):
 
 function renderInspectionGroup(group: unknown[], width: number): string[] {
 	syncToolBackgroundMode();
+	// MCP calls contribute a clause to the header but never a ⎿ row of their own.
+	const targets = group.filter((entry) => !isMcpToolExecution(entry));
 	const limit = readOnlyToolGroupLimit();
-	const shown = group.slice(0, limit);
-	const remaining = group.length - shown.length;
+	const shown = targets.slice(0, limit);
+	const remaining = targets.length - shown.length;
 	const kinds = group.map(inspectionKind);
+	const servers = mcpServersInGroup(group);
 	const settled = group.every(isSettledInspectionTool);
-	if (settled) return renderCollapsedInspectionGroup(kinds, width);
-	const core: string[] = [`${WRAP_MARK}${CLAUDE_TOOL_GLYPH} ${describeInspectionsActive(kinds)}`];
+	if (settled) return renderCollapsedInspectionGroup(kinds, servers, width);
+	const core: string[] = [`${WRAP_MARK}${CLAUDE_TOOL_GLYPH} ${describeInspectionsActive(kinds, servers)}`];
 	for (const entry of shown) {
 		core.push(`${TOOL_RULE}${CLAUDE_RESULT_PREFIX}${TRANSPARENT_RESET}${WRAP_MARK}${summarizeReadOnlyInspectionTool(entry)}`);
 	}
@@ -666,7 +689,8 @@ function renderWithGroupedReadOnlyInspectionTools(container: any, width: number)
 	let previousWasBash = false;
 	const flushGroup = () => {
 		if (group.length === 0) return;
-		if (group.length === 1) {
+		// A lone MCP call still renders as the aggregate line — it has no row of its own.
+		if (group.length === 1 && !isMcpToolExecution(group[0])) {
 			const child = group[0] as any;
 			const currentIsBash = isBashToolExecution(child);
 			const childLines = typeof child?.render === "function" ? child.render(width) : [];
@@ -3621,11 +3645,52 @@ const OPENAI_STYLE_TOOL_NAMES = new Set([
 	"TaskExecute",
 ]);
 
+/**
+ * Tool names known to be MCP-backed, and the server behind each.
+ *
+ * pi exposes MCP two ways (pi-mcp-adapter): a single `mcp` proxy tool, and
+ * "direct" tools registered under the MCP tool's own name — `plane_get_me`, or
+ * even a bare `get_me` when the server prefix is disabled. A direct tool's name
+ * therefore carries no reliable trace of MCP or of its server, so both are
+ * recorded at registration instead of being guessed from the name.
+ */
+const mcpToolNames = new Set<string>(["mcp"]);
+const mcpToolServers = new Map<string, string>();
+/** pi tool name → the MCP tool's own name, e.g. `plane_get_me` → `get_me`. */
+const mcpToolOriginals = new Map<string, string>();
+
+/**
+ * The adapter labels every direct tool `MCP: <original name>` and the proxy tool
+ * `MCP`. That label is the marker — not the description, which is the MCP tool's
+ * own prose and may say nothing about MCP.
+ */
 function isMcpToolCandidate(tool: unknown): boolean {
 	const rec = tool as Record<string, unknown> | undefined;
 	const name = typeof rec?.name === "string" ? rec.name : "";
-	const description = typeof rec?.description === "string" ? rec.description : "";
-	return name === "mcp" || /\bmcp\b/i.test(description);
+	const label = typeof rec?.label === "string" ? rec.label : "";
+	return name === "mcp" || /^mcp__/.test(name) || /^mcp\b/i.test(label);
+}
+
+/**
+ * Records a tool as MCP-backed and recovers its server name. A direct tool is
+ * named `<server>_<original>` (or plain `<original>` when the adapter's prefix is
+ * off), and labelled `MCP: <original>` — so the label yields the original name
+ * and whatever the pi name carries in front of it is the server.
+ */
+function noteMcpTool(tool: unknown): void {
+	const rec = tool as Record<string, unknown> | undefined;
+	const name = typeof rec?.name === "string" ? rec.name : "";
+	if (!name) return;
+	mcpToolNames.add(name);
+
+	const label = typeof rec?.label === "string" ? rec.label : "";
+	const original = /^mcp:\s*(.+)$/i.exec(label)?.[1]?.trim();
+	if (!original) return;
+	mcpToolOriginals.set(name, original);
+	const suffix = `_${original}`;
+	if (name.endsWith(suffix) && name.length > suffix.length) {
+		mcpToolServers.set(name, name.slice(0, name.length - suffix.length));
+	}
 }
 
 function isOpenAiToolCandidate(tool: unknown): boolean {
@@ -3642,8 +3707,9 @@ function humanizeToolName(name: string): string {
 		.replace(/\b\w/g, (char) => char.toUpperCase());
 }
 
-function isMcpToolName(name: string): boolean {
-	return name === "mcp" || /^mcp[_:-]/i.test(name) || /[_:-]mcp[_:-]/i.test(name);
+function isMcpToolName(name: unknown): boolean {
+	if (typeof name !== "string" || name.length === 0) return false;
+	return name === "mcp" || /^mcp__/.test(name) || mcpToolNames.has(name);
 }
 
 function shouldUseGenericToolRenderer(name: unknown): boolean {
@@ -4137,18 +4203,108 @@ function renderApplyPatchResult(result: any, isPartial: boolean, theme: Theme, c
 	return makeText(ctx.lastComponent, withBranch(`${theme.fg("success", "Applied")} ${meta.changeCount} files ${summary}${meta.totalLines ? ` ${theme.fg("muted", `(${meta.totalLines} diff lines)`)}` : ""}`, theme));
 }
 
-function summarizeMcpToolCall(args: any, theme: Theme): string {
-	const tool = getStringArg(args, "tool");
-	if (tool) return args?.server ? `${args.server}:${tool}` : tool;
-	const connect = getStringArg(args, "connect");
-	if (connect) return `connect ${connect}`;
-	const search = getStringArg(args, "search", "describe", "server", "action");
-	if (search) return summarizeText(search, 72);
-	return theme.fg("muted", "status");
+// ===========================================================================
+// MCP rendering.
+//
+// Claude Code does not give MCP calls their own tool rows: no `Tool(args)`
+// header, no ⎿ result row, no argument or result display, and no distinction
+// between read-only, mutating, and failing tools. An MCP call contributes one
+// clause — naming the *server* — to the aggregated inspection group, which
+// collapses to a dim line when the turn settles:
+//
+//   ⏺ Calling openosint, forgejo, obsidian, plane 6 times…
+//     Called openosint, forgejo, obsidian, plane 6 times
+//
+// Captured live from claude v2.1.x against four real MCP servers plus a probe
+// server: docs/plans/2026-07-13-mcp-grammar.md
+//
+// So the only thing rendering needs from an MCP call is its server name. Two
+// naming conventions are supported, and neither hardcodes any server:
+//
+//   name `mcp`                 pi's meta-tool; the server is in the arguments
+//                              ({ tool: "plane_list_work_items", server? },
+//                              or { describe }/{ search }/{ connect }/{ action })
+//   name `mcp__plane__list_…`  MCP tools exposed directly, Claude Code style
+// ===========================================================================
+
+/**
+ * `plane_list_work_items` → `plane`. The qualified name carries its own prefix.
+ *
+ * Returns "" when there is no separator yet. The proxy tool receives this name
+ * inside *streamed* arguments, so a half-emitted `forgejo_get_my_user_info` reads
+ * as `forge` — taking that as the server would render (and cache) `Calling forge…`.
+ * Requiring the underscore means the prefix is complete before it is believed.
+ */
+function serverFromQualifiedName(qualified: string): string {
+	const boundary = qualified.indexOf("_");
+	return boundary <= 0 ? "" : qualified.slice(0, boundary);
+}
+
+/**
+ * The MCP server a call is addressed to, or "" when it cannot be determined.
+ * Generic over servers and over every naming convention — nothing is hardcoded.
+ */
+export function mcpServerName(toolName: unknown, args: any): string {
+	const name = typeof toolName === "string" ? toolName : "";
+
+	// A direct tool, whose server was recorded when the adapter registered it.
+	const registered = mcpToolServers.get(name);
+	if (registered) return registered;
+
+	// MCP tools exposed as mcp__<server>__<tool>.
+	const qualified = /^mcp__(.+?)__/.exec(name);
+	if (qualified) return qualified[1];
+
+	// The proxy tool: the server is explicit, or inferable from the operand.
+	const explicit = getStringArg(args, "server", "connect");
+	if (explicit) return explicit;
+	const operand = getStringArg(args, "tool", "describe");
+	return operand ? serverFromQualifiedName(operand) : "";
+}
+
+/**
+ * The server behind a call. The adapter stamps `details.server` on MCP results in
+ * both modes, which beats any inference from the name.
+ *
+ * Memoized per component: with the proxy tool the server arrives inside streamed
+ * arguments, so it is briefly unknowable while the model is still emitting them.
+ * Caching the first answer keeps the header from flickering back to a fallback.
+ */
+function mcpServerForComponent(value: unknown): string {
+	const rec = toolComponentRecord(value);
+	if (typeof rec._ccMcpServer === "string" && rec._ccMcpServer) return rec._ccMcpServer;
+	const stamped = rec.result?.details?.server;
+	const resolved = typeof stamped === "string" && stamped ? stamped : mcpServerName(rec.toolName, rec.args);
+	if (resolved) rec._ccMcpServer = resolved;
+	return resolved;
+}
+
+/**
+ * Only reached when grouping is switched off — Claude Code shows no per-call MCP
+ * row at all, so the aggregate clause normally renders instead of this.
+ */
+function summarizeMcpToolCall(name: string, args: any, theme: Theme): string {
+	const server = mcpServerName(name, args);
+
+	// A direct tool: the call *is* the MCP tool, so name it.
+	if (name !== "mcp") {
+		const original = mcpToolOriginals.get(name) ?? name;
+		return server ? `${server}:${original}` : original;
+	}
+
+	const tool = getStringArg(args, "tool", "describe");
+	if (tool) {
+		// Strip the server prefix the qualified name already carries, so the row
+		// reads `plane:list_work_items`, not `plane:plane_list_work_items`.
+		const bare = server && tool.startsWith(`${server}_`) ? tool.slice(server.length + 1) : tool;
+		return server ? `${server}:${bare}` : bare;
+	}
+	const other = getStringArg(args, "connect", "search", "action", "server");
+	return other ? summarizeText(other, 72) : theme.fg("muted", "status");
 }
 
 function summarizeGenericToolCall(name: string, args: any, theme: Theme, sp: (path: string) => string): string {
-	if (isMcpToolName(name)) return summarizeMcpToolCall(args, theme);
+	if (isMcpToolName(name)) return summarizeMcpToolCall(name, args, theme);
 	return summarizeOpenAiToolCall(name, args, theme, sp);
 }
 
@@ -4169,11 +4325,21 @@ function renderMcpToolResult(result: any, expanded: boolean, isPartial: boolean,
 		return makeText(ctx.lastComponent, withBranch(theme.fg(ctx.isError ? "error" : "success", ctx.isError ? "Failed" : "Done"), theme));
 	}
 
-	const statusText = ctx.isError ? theme.fg("error", lines[0]) : theme.fg("muted", `${lines.length} line${lines.length === 1 ? "" : "s"} returned`);
-	if (mode === "summary") return makeText(ctx.lastComponent, withBranch(statusText, theme));
-	if (!expanded) return makeText(ctx.lastComponent, withBranch(`${statusText}${theme.fg("muted", " (ctrl+o to expand)")}`, theme));
-	const preview = buildPreviewText(lines.map((line) => theme.fg(ctx.isError ? "error" : "toolOutput", line || " ")), true, theme, previewLimit());
-	return makeText(ctx.lastComponent, withBranch(`${statusText}\n${preview}`, theme));
+	if (mode === "summary") {
+		const statusText = ctx.isError ? theme.fg("error", lines[0]) : resultSentence(theme, `${plural(lines.length, "line")} returned`);
+		return makeText(ctx.lastComponent, withBranch(statusText, theme));
+	}
+
+	// Claude Code shows the payload itself under ⎿ and lets buildPreviewText add
+	// the "… +N lines (ctrl+o to expand)" tail — it never renders a bare count.
+	const tone = ctx.isError ? "error" : "toolOutput";
+	const preview = buildPreviewText(
+		lines.map((line) => theme.fg(tone, line || " ")),
+		expanded,
+		theme,
+		previewLimit(),
+	);
+	return makeText(ctx.lastComponent, withBranch(preview, theme));
 }
 
 function summarizeOpenAiToolCall(name: string, args: any, theme: Theme, sp: (path: string) => string): string {
@@ -5523,6 +5689,10 @@ export default function (pi: ExtensionAPI) {
 		}
 		for (const tool of allTools) {
 			if (!isMcpToolCandidate(tool)) continue;
+			// Record every MCP tool and its server, even ones already wrapped or with
+			// no execute() to wrap: rendering identifies MCP calls from this registry,
+			// since a direct tool's name (`get_me`) can carry no trace of MCP at all.
+			noteMcpTool(tool);
 			const record = tool as Record<string, unknown>;
 			const name = typeof record.name === "string" ? record.name : "";
 			if (!name || wrappedMcpTools.has(name)) continue;
