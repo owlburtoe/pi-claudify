@@ -18,11 +18,19 @@
   "diffTheme": "monokai",
   "diffColors": {},
   "spinnerColor": "borderAccent",
-  "spinnerVerbs": ["Reviewing", "Polishing"],
+  "spinnerVerbs": [
+    "Reviewing",
+    "Polishing"
+  ],
   "spinnerVerbMode": "append",
   "messageStyle": "claude",
   "assistantPrefix": "⏺",
   "thinkingPrefix": "✻",
   "messageSpacing": "comfortable",
-  "hiddenThinkingLabel": "Pondering..."
+  "hiddenThinkingLabel": "Pondering...",
+  "workedVerbs": [
+    "Hacked",
+    "Tinkered"
+  ],
+  "workedVerbMode": "append"
 }

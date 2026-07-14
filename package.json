@@ -1,6 +1,6 @@
 {
   "name": "@owlburtoe/pi-cc-tools",
-  "version": "1.1.6",
+  "version": "1.1.7",
   "description": "Claude Code-style tool rows for pi with Ctrl+O image previews and consistent built-in, MCP, and custom tool rendering",
   "keywords": [
     "pi-package",
@@ -39,7 +39,8 @@
     "test:diff-body": "bun scripts/test-diff-body.ts",
     "test:inspection-summary": "bun scripts/test-inspection-summary.ts",
     "test:mutation-summary": "bun scripts/test-mutation-summary.ts",
-    "test": "bun scripts/test-message-chrome.ts && bun scripts/test-bash-display.ts && bun scripts/test-inspection-summary.ts && bun scripts/test-mutation-summary.ts && bun scripts/test-diff-body.ts"
+    "test": "bun scripts/test-message-chrome.ts && bun scripts/test-bash-display.ts && bun scripts/test-inspection-summary.ts && bun scripts/test-mutation-summary.ts && bun scripts/test-diff-body.ts && bun scripts/test-worked-verbs.ts",
+    "test:worked-verbs": "bun scripts/test-worked-verbs.ts"
   },
   "dependencies": {
     "@shikijs/cli": "^4.0.2",

@@ -50,14 +50,18 @@ import { describeEdit, describeWrite } from "./mutation-summary.ts";
 import {
 	DEFAULT_HIDDEN_THINKING_LABEL,
 	DEFAULT_USER_PREFIX,
+	DEFAULT_WORKED_VERBS,
 	formatTranscriptLines,
 	formatWorkedLine,
 	isWorkedLine,
 	resolveMessageChromeSettings,
+	resolveWorkedVerbs,
 	sanitizeMessagePrefix,
+	sanitizeWorkedVerbs,
 	type MessageChromeSettings,
 	type MessageSpacing,
 	type MessageStyle,
+	type WorkedVerbMode,
 } from "./message-chrome.ts";
 
 const RESET = "\x1b[0m";
@@ -153,6 +157,14 @@ interface SettingsFile {
 	messageSpacing?: MessageSpacing;
 	/** Label shown when thinking blocks are hidden by the Pi UI. */
 	hiddenThinkingLabel?: string;
+	/**
+	 * Custom verbs for the end-of-turn worked line ("✻ Cooked for 8s"). One is
+	 * picked per turn. Combined with the built-in pool unless `workedVerbMode`
+	 * is "replace".
+	 */
+	workedVerbs?: string[];
+	/** "append" (default) merges with the built-in verbs; "replace" uses only yours. */
+	workedVerbMode?: WorkedVerbMode;
 }
 
 let _settingsCache: { value: SettingsFile; timestamp: number } | null = null;
@@ -811,8 +823,14 @@ let WORKED_LINE_FG = "\x1b[38;2;140;140;140m";
 let currentAgentWorkStartMs: number | undefined;
 let currentAssistantMessageStartMs: number | undefined;
 
+function workedVerbs(): readonly string[] {
+	const settings = readSettings();
+	const mode: WorkedVerbMode = settings.workedVerbMode === "replace" ? "replace" : "append";
+	return resolveWorkedVerbs(settings.workedVerbs, mode);
+}
+
 function workedDurationText(ms: number, seed?: number): string {
-	return `${WORKED_LINE_FG}${formatWorkedLine(ms, { seed })}${RESET}`;
+	return `${WORKED_LINE_FG}${formatWorkedLine(ms, { seed, verbs: workedVerbs() })}${RESET}`;
 }
 
 function inlineWorkedDurationText(ms: number, seed?: number): string {
@@ -4681,7 +4699,8 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
-	const MESSAGE_COMMANDS = ["style", "spacing", "assistant-prefix", "thinking-prefix", "hidden-thinking-label", "reset", "status"] as const;
+	const MESSAGE_COMMANDS = ["style", "spacing", "assistant-prefix", "thinking-prefix", "hidden-thinking-label", "verbs", "reset", "status"] as const;
+	const VERB_COMMANDS = ["list", "add", "remove", "mode", "reset"] as const;
 	pi.registerCommand("cc-message", {
 		description: "Configure Claude-style assistant/thinking transcript chrome",
 		getArgumentCompletions(prefix: string) {
@@ -4699,9 +4718,44 @@ export default function (pi: ExtensionAPI) {
 							: c === "assistant-prefix" ? "Set assistant paragraph prefix glyph/text"
 							: c === "thinking-prefix" ? "Set visible thinking prefix glyph/text"
 							: c === "hidden-thinking-label" ? "Set label shown when thinking is hidden"
+							: c === "verbs" ? "Customize worked-line verbs (✻ Cooked for 8s)"
 							: c === "reset" ? "Reset message chrome settings"
 							: "Show current message chrome settings",
 					}));
+			}
+			if (parts[0] === "verbs") {
+				const valuePrefix = (parts[1] ?? "").toLowerCase();
+				if (parts.length === 2) {
+					return VERB_COMMANDS
+						.filter((v) => v.startsWith(valuePrefix))
+						.map((v) => ({
+							value: `verbs ${v}`,
+							label: v,
+							description:
+								v === "list" ? "Show custom worked verbs and mode"
+								: v === "add" ? "Add a custom worked verb or phrase"
+								: v === "remove" ? "Remove a custom worked verb"
+								: v === "mode" ? "append to defaults, or replace them"
+								: "Remove all custom worked verbs",
+						}));
+				}
+				if (parts[1] === "mode") {
+					const modePrefix = (parts[2] ?? "").toLowerCase();
+					return ["append", "replace"]
+						.filter((v) => v.startsWith(modePrefix))
+						.map((v) => ({
+							value: `verbs mode ${v}`,
+							label: v,
+							description: v === "append" ? "Add yours to the built-in verbs" : "Use only your verbs",
+						}));
+				}
+				if (parts[1] === "remove") {
+					const verbPrefix = (parts.slice(2).join(" ") ?? "").toLowerCase();
+					return sanitizeWorkedVerbs(readSettings().workedVerbs)
+						.filter((v) => v.toLowerCase().startsWith(verbPrefix))
+						.map((v) => ({ value: `verbs remove ${v}`, label: v, description: "Remove this custom verb" }));
+				}
+				return [];
 			}
 			if (parts[0] === "style") {
 				const valuePrefix = (parts[1] ?? "").toLowerCase();
@@ -4724,12 +4778,15 @@ export default function (pi: ExtensionAPI) {
 			const current = getMessageChromeSettings();
 			const notifyStatus = () => {
 				if (!ctx.hasUI) return;
+				const customVerbs = sanitizeWorkedVerbs(readSettings().workedVerbs);
+				const verbMode: WorkedVerbMode = readSettings().workedVerbMode === "replace" ? "replace" : "append";
 				ctx.ui.notify([
 					`Message style: ${current.messageStyle}`,
 					`Assistant prefix: ${current.assistantPrefix}`,
 					`Thinking prefix: ${current.thinkingPrefix}`,
 					`Spacing: ${current.messageSpacing}`,
 					`Hidden thinking label: ${current.hiddenThinkingLabel}`,
+					`Worked verbs: ${customVerbs.length ? `${customVerbs.join(", ")} (${verbMode})` : `built-in (${DEFAULT_WORKED_VERBS.length} verbs)`}`,
 				].join("\n"), "info");
 			};
 
@@ -4739,12 +4796,85 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			if (sub === "reset") {
-				for (const key of ["messageStyle", "assistantPrefix", "thinkingPrefix", "messageSpacing", "hiddenThinkingLabel"]) {
+				for (const key of ["messageStyle", "assistantPrefix", "thinkingPrefix", "messageSpacing", "hiddenThinkingLabel", "workedVerbs", "workedVerbMode"]) {
 					writeSettingsKey(key, undefined);
 				}
 				bustSpinnerSettingsCache();
 				applyHiddenThinkingLabel(ctx);
 				if (ctx.hasUI) ctx.ui.notify("Message chrome reset to Claude-style defaults", "info");
+				return;
+			}
+
+			if (sub === "verbs") {
+				const action = (parts[1] ?? "list").toLowerCase();
+				const custom = sanitizeWorkedVerbs(readSettings().workedVerbs);
+				const mode: WorkedVerbMode = readSettings().workedVerbMode === "replace" ? "replace" : "append";
+
+				if (action === "list") {
+					if (!ctx.hasUI) return;
+					const active = resolveWorkedVerbs(custom, mode);
+					ctx.ui.notify([
+						`Worked verbs mode: ${mode}`,
+						custom.length ? `Custom: ${custom.join(", ")}` : "Custom: (none — using built-in verbs)",
+						`Active pool (${active.length}): ${active.join(", ")}`,
+					].join("\n"), "info");
+					return;
+				}
+
+				if (action === "add") {
+					const verb = rawArgs.replace(/^verbs\s+add\s*/i, "");
+					const [cleaned] = sanitizeWorkedVerbs([verb]);
+					if (!cleaned) {
+						if (ctx.hasUI) ctx.ui.notify("Usage: /cc-message verbs add <verb or phrase>", "error");
+						return;
+					}
+					if (custom.some((v) => v.toLocaleLowerCase() === cleaned.toLocaleLowerCase())) {
+						if (ctx.hasUI) ctx.ui.notify(`"${cleaned}" is already a custom verb`, "warning");
+						return;
+					}
+					writeSettingsKey("workedVerbs", [...custom, cleaned]);
+					if (ctx.hasUI) ctx.ui.notify(`Added worked verb "${cleaned}" — e.g. ✻ ${cleaned} for 8s`, "info");
+					return;
+				}
+
+				if (action === "remove") {
+					const verb = rawArgs.replace(/^verbs\s+remove\s*/i, "").trim().toLocaleLowerCase();
+					const next = custom.filter((v) => v.toLocaleLowerCase() !== verb);
+					if (!verb || next.length === custom.length) {
+						if (ctx.hasUI) ctx.ui.notify("Usage: /cc-message verbs remove <verb>", "error");
+						return;
+					}
+					writeSettingsKey("workedVerbs", next.length ? next : undefined);
+					if (ctx.hasUI) ctx.ui.notify(`Removed worked verb "${verb}"`, "info");
+					return;
+				}
+
+				if (action === "mode") {
+					const value = (parts[2] ?? "").toLowerCase();
+					if (value !== "append" && value !== "replace") {
+						if (ctx.hasUI) ctx.ui.notify("Usage: /cc-message verbs mode append|replace", "error");
+						return;
+					}
+					writeSettingsKey("workedVerbMode", value);
+					if (ctx.hasUI) {
+						ctx.ui.notify(
+							value === "replace"
+								? "Worked verbs → replace (only your verbs are used)"
+								: "Worked verbs → append (your verbs join the built-in pool)",
+							"info",
+						);
+					}
+					return;
+				}
+
+				if (action === "reset") {
+					writeSettingsKey("workedVerbs", undefined);
+					writeSettingsKey("workedVerbMode", undefined);
+					if (ctx.hasUI) ctx.ui.notify("Worked verbs reset to the built-in pool", "info");
+					return;
+				}
+
+				if (ctx.hasUI) ctx.ui.notify("Usage: /cc-message verbs list|add|remove|mode|reset", "error");
 				return;
 			}
 
@@ -4788,7 +4918,7 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 
-			if (ctx.hasUI) ctx.ui.notify("Usage: /cc-message style|spacing|assistant-prefix|thinking-prefix|hidden-thinking-label|reset|status", "error");
+			if (ctx.hasUI) ctx.ui.notify("Usage: /cc-message style|spacing|assistant-prefix|thinking-prefix|hidden-thinking-label|verbs|reset|status", "error");
 		},
 	});
 
