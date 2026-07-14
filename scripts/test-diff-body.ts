@@ -1,8 +1,22 @@
 import assert from "node:assert/strict";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { initTheme } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
 
-import { parseDiff, renderFileListing, renderUnified } from "../extensions/index.ts";
+// Isolate ambient config. At module-eval time extensions/index.ts seeds its shiki
+// theme from $DIFF_THEME and reads its diff palette from $CWD/.pi/settings.json,
+// falling back to $HOME/.pi/settings.json. The palette asserted below is the
+// default (Monokai) one, so a developer with either of those set renders other
+// token colors and the syntax-highlighting assertions go red. Pin both, then
+// import — a static import would be hoisted above these lines.
+const sandbox = mkdtempSync(join(tmpdir(), "cc-diff-"));
+process.env.HOME = sandbox;
+process.chdir(sandbox);
+process.env.DIFF_THEME = "monokai";
+
+const { parseDiff, renderFileListing, renderUnified } = await import("../extensions/index.ts");
 
 // Target grammar + palette captured from the raw Claude Code TTY stream:
 // docs/plans/2026-07-13-current-cc-grammar.md
