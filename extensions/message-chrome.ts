@@ -22,6 +22,12 @@ export interface TranscriptLineOptions {
 	spacing?: MessageSpacing;
 	normalizeChecks?: boolean;
 	visibleWidth?: (text: string) => number;
+	/**
+	 * The worked line ("✻ Cooked for 8s") rides along inside the assistant text
+	 * block, so it would otherwise inherit the paragraph's continuation indent.
+	 * Claude Code renders it flush at column 0.
+	 */
+	dedentWorkedLine?: boolean;
 }
 
 export const DEFAULT_HIDDEN_THINKING_LABEL = "Pondering...";
@@ -195,6 +201,7 @@ export function formatTranscriptLines(lines: string[], options: TranscriptLineOp
 	let prefixPlaced = false;
 	return normalized.map((line) => {
 		const displayLine = options.normalizeChecks === false ? line : normalizeLeadingCheckGlyph(line);
+		if (options.dedentWorkedLine && isWorkedLine(displayLine)) return displayLine.trimStart();
 		if (!prefixPlaced && !isBlankLine(displayLine)) {
 			prefixPlaced = true;
 			return `${prefix}${displayLine}`;
@@ -251,7 +258,7 @@ const WORKED_DURATION_PATTERN = "\\d+[dhms](?: \\d+[dhms])*";
 const WORKED_LINE_RE = new RegExp(`^${WORKED_GLYPH} .+ for ${WORKED_DURATION_PATTERN}(?: · .+)?$`);
 
 export function isWorkedLine(line: string): boolean {
-	return WORKED_LINE_RE.test(line.trim());
+	return WORKED_LINE_RE.test(stripAnsi(line).trim());
 }
 
 export function formatWorkedLine(durationMs: number, options: WorkedLineOptions = {}): string {

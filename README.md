@@ -12,6 +12,7 @@ Claude Code inspired tool rendering for Pi — Shiki-powered diffs, status dots,
 - **`apply_patch` diff previews** that render parsed file patches in the call phase, similar to `edit`/`write`
 - **Claude Code diff bodies** — unified hunks with a ` N ` gutter and sign column, no box chrome, Claude's exact red/green palette, brighter backgrounds on changed tokens, and unhighlighted removals; writes render as a plain numbered listing
 - **Sentence result rows** (`Wrote 3 lines to <path>`, `Added 2 lines, removed 2 lines`) instead of stat bars
+- **Claude Code tool chrome** — the `⏺` bullet goes gray → green as a tool succeeds, tool names are bold, and file paths are OSC 8 hyperlinks you can click to open the file
 - **Progressive collapsed diff hints** that shorten on narrow terminals
 - **Thinking labels** during streaming and final messages, with context sanitization
 - **Claude-style transcript grammar controls** for assistant/thinking prefixes, message spacing, and hidden thinking labels
@@ -42,6 +43,7 @@ Set in `.pi/settings.json` or `~/.pi/settings.json`:
   "diffCollapsedLines": 24,
   "themeAdaptive": true,
   "diffPalette": "claude",
+  "toolChrome": "claude",
   "diffTheme": "monokai",
   "spinnerColor": "borderAccent",
   "spinnerVerbs": ["Reviewing", "Polishing"],
@@ -74,6 +76,25 @@ When `themeAdaptive` is `true` (default), the following colors are derived from 
 User-supplied `diffTheme` presets and `diffColors` overrides always win over theme-derived defaults. File-type icons (e.g. `ts`, `py`, `rs`) keep their language-identity colors and are not theme-derived.
 
 Set `themeAdaptive: false` to keep the original fixed Claude-style palette regardless of the active pi theme.
+
+### Tool row chrome
+
+`toolChrome` defaults to `"claude"`, which mirrors how Claude Code signals what a tool is
+doing and whether it worked:
+
+- **The bullet carries the status.** `⏺` is gray while the tool runs and turns green once
+  it actually succeeded (red on failure). It's the only color in the row.
+- **File paths are clickable, not colored.** Paths are wrapped in OSC 8 hyperlinks
+  (`file://…`), so a supporting terminal (iTerm2, WezTerm, Ghostty, Kitty, VS Code) opens
+  the file on click. Claude Code tints nothing here — emphasis comes from **bold**.
+- **The tool name is bold** in the default foreground; parens are plain.
+- **Result rows bold the load-bearing facts** — the line counts and the path — against
+  plain text, with the `⎿` gutter in gray.
+
+Terminals without OSC 8 support ignore the escape and show the plain path. The links are
+zero-width, so they never affect wrapping or alignment.
+
+Set `toolChrome: "theme"` to go back to accent-tinted arguments and a themed tool title.
 
 ### Diff palette
 

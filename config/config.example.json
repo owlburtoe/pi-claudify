@@ -15,6 +15,7 @@
   "showTruncationHints": false,
   "themeAdaptive": true,
   "diffPalette": "claude",
+  "toolChrome": "claude",
   "diffTheme": "monokai",
   "diffColors": {},
   "spinnerColor": "borderAccent",

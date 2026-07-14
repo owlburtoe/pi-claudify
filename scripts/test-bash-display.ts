@@ -153,7 +153,7 @@ component.updateResult({
 	details: {},
 } as any, false);
 
-const rendered = component.render(120).map((line) => line.replace(/\x1b\[[0-9;]*m/g, "").replace(/\s+$/, "")).join("\n");
+const rendered = component.render(120).map((line) => line.replace(/\x1b\]8;;[^\x07]*\x07/g, "").replace(/\x1b\[[0-9;]*m/g, "").replace(/\s+$/, "")).join("\n");
 assert.match(rendered, /⏺ Read\(apps\/backend\/src\/lib\/notification-unsubscribe\.ts \(lines 1-200\)\)/);
 assert.match(rendered, /⎿  Read 2 lines/);
 assert.doesNotMatch(rendered, /Bash nl -ba/);
@@ -169,7 +169,7 @@ groupedContainer.addChild(completedTool(pi, "grep", "grep-two", { pattern: "gamm
 groupedContainer.addChild(completedTool(pi, "read", "read-three", { path: "src/three.ts" }, "delta"));
 groupedContainer.addChild(completedTool(pi, "write", "write-one", { path: "src/write.ts", content: "next\n" }, "ok", { _type: "new", lines: 2, filePath: "src/write.ts" }));
 
-const groupedRendered = groupedContainer.render(120).map((line) => line.replace(/\x1b\[[0-9;]*m/g, "").replace(/\s+$/, "")).join("\n");
+const groupedRendered = groupedContainer.render(120).map((line) => line.replace(/\x1b\]8;;[^\x07]*\x07/g, "").replace(/\x1b\[[0-9;]*m/g, "").replace(/\s+$/, "")).join("\n");
 
 // Every read-only tool has settled, so Claude Code collapses the whole block to a
 // single dim past-tense line with no bullet. Grammar:
@@ -194,7 +194,7 @@ activeContainer.addChild(runningTool(pi, "read", "run-read", { path: "src/one.ts
 activeContainer.addChild(runningTool(pi, "read", "run-read-2", { path: "src/two.ts" }));
 activeContainer.addChild(runningTool(pi, "bash", "run-bash", { command: "git log --oneline -3" }));
 
-const activeRendered = activeContainer.render(120).map((line) => line.replace(/\x1b\[[0-9;]*m/g, "").replace(/\s+$/, "")).join("\n");
+const activeRendered = activeContainer.render(120).map((line) => line.replace(/\x1b\]8;;[^\x07]*\x07/g, "").replace(/\x1b\[[0-9;]*m/g, "").replace(/\s+$/, "")).join("\n");
 assert.match(activeRendered, /^⏺ Reading 2 files, running 1 shell command…$/m);
 assert.match(activeRendered, /^ {2}⎿ {2}src\/one\.ts$/m);
 assert.match(activeRendered, /^ {2}⎿ {2}src\/two\.ts$/m);

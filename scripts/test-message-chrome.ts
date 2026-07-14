@@ -124,6 +124,36 @@ assert.deepEqual(
 );
 assert.deepEqual(sanitizeWorkedVerbs("not an array"), []);
 
+// The worked line sits flush at column 0, not indented under the assistant text.
+assert.deepEqual(
+	formatTranscriptLines(["All done.", "", "✻ Cooked for 8s"], {
+		prefix: "⏺",
+		spacing: "comfortable",
+		dedentWorkedLine: true,
+	}),
+	[
+		"⏺ All done.",
+		"  ",
+		"✻ Cooked for 8s",
+	],
+);
+
+// Without the flag it keeps the paragraph's continuation indent.
+assert.deepEqual(
+	formatTranscriptLines(["All done.", "✻ Cooked for 8s"], { prefix: "⏺", spacing: "comfortable" }),
+	["⏺ All done.", "  ✻ Cooked for 8s"],
+);
+
+// Dedent must survive the color codes the worked line is wrapped in.
+assert.deepEqual(
+	formatTranscriptLines(["Done.", "[38;2;140;140;140m✻ Hacked for 3s[0m"], {
+		prefix: "⏺",
+		spacing: "comfortable",
+		dedentWorkedLine: true,
+	}),
+	["⏺ Done.", "[38;2;140;140;140m✻ Hacked for 3s[0m"],
+);
+
 // A custom verb still reads as a worked line, so it gets stripped from model context.
 assert.ok(isWorkedLine("✻ Yeeted for 8s"));
 assert.ok(isWorkedLine("✻ Cooked up for 1m 25s"));

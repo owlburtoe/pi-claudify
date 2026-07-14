@@ -94,6 +94,43 @@ with **no bullet glyph**, past tense:
 Errors are not surfaced here. A `bash -c "exit 3"` and a read of a nonexistent file both
 collapsed into this summary with no visible error marker.
 
+### Tool row chrome
+
+Captured from the raw TTY stream. The header is:
+
+```
+⏺ Write(/tmp/ccdiff.ts)
+```
+
+which on the wire is:
+
+```
+<ESC>[38;2;78;186;101m ⏺   <ESC>[39m <ESC>[1m Write <ESC>[22m ( <OSC8 link>/tmp/ccdiff.ts</OSC8> )
+```
+
+Two things worth stating plainly, because both are easy to get wrong:
+
+- **Claude Code does not tint file paths.** The path carries no color of its own. It is
+  wrapped in an OSC 8 hyperlink (`ESC ] 8 ; ; file://<abs> BEL <label> ESC ] 8 ; ; BEL`)
+  so the terminal makes it clickable and styles it. Emphasis comes from **bold**, never
+  from hue. The tool name is bold in the default foreground; the parens are plain.
+- **The bullet is the status signal.** It carries the only color in the row, and it
+  changes as the tool runs:
+
+| State | Bullet color |
+|-------|--------------|
+| Running | `38;2;153;153;153` (gray) |
+| Succeeded | `38;2;78;186;101` (green) |
+| Assistant prose | `38;2;255;255;255` (white) |
+
+Result rows put the counts and the path in **bold** against the default foreground, with
+the `⎿` gutter in `38;2;153;153;153`:
+
+```
+  ⎿  Wrote **3** lines to **../../../../tmp/ccdiff.ts**
+  ⎿  Added **2** lines, removed **2** lines
+```
+
 ### Diff body
 
 Captured from the raw TTY stream (`script`), so the SGR codes are exact.
