@@ -46,7 +46,7 @@ import {
 	describeInspectionsDone,
 	type InspectionKind,
 } from "./inspection-summary.ts";
-import { describeEdit, describeWrite } from "./mutation-summary.ts";
+import { describeEdit, describeWrite, type SummaryEmphasis } from "./mutation-summary.ts";
 import {
 	DEFAULT_HIDDEN_THINKING_LABEL,
 	DEFAULT_USER_PREFIX,
@@ -93,6 +93,34 @@ const CLAUDE_RESULT_CONTINUATION = " ".repeat(CLAUDE_RESULT_PREFIX.length);
 // The collapsed read-only summary hangs at the bullet's indent, not the ⎿ gutter's.
 const CLAUDE_COLLAPSED_INDENT = "  ";
 
+// Status colors read off Claude Code's raw TTY stream. The bullet is the trust
+// signal: gray while the tool runs, green once it actually succeeded.
+const CC_DOT_PENDING = "\x1b[38;2;153;153;153m";
+const CC_DOT_SUCCESS = "\x1b[38;2;78;186;101m";
+const CC_DOT_ERROR = "\x1b[38;2;220;90;90m";
+const CC_GUTTER_FG = "\x1b[38;2;153;153;153m";
+const D_BOLD_ON = "\x1b[1m";
+const D_BOLD_OFF = "\x1b[22m";
+const FG_DEFAULT = "\x1b[39m";
+
+/**
+ * Claude Code does not tint file paths — it wraps them in an OSC 8 hyperlink so
+ * the terminal makes them clickable, and leaves the color to the terminal. The
+ * emphasis comes from bold, not hue.
+ */
+function osc8Link(target: string, label: string): string {
+	if (!target) return label;
+	const uri = `file://${encodeURI(target)}`;
+	return `\x1b]8;;${uri}\x07${label}\x1b]8;;\x07`;
+}
+
+/** Absolute path for the link target; the label stays the short display path. */
+function linkedPath(cwd: string, displayPath: string, absolutePath?: string): string {
+	if (!displayPath) return displayPath;
+	const target = absolutePath ?? (displayPath.startsWith("/") ? displayPath : resolve(cwd, displayPath));
+	return osc8Link(target, displayPath);
+}
+
 type SpinnerVerbMode = "append" | "replace";
 
 interface SettingsFile {
@@ -120,6 +148,12 @@ interface SettingsFile {
 	 * tints and the adaptive split/unified layout.
 	 */
 	diffPalette?: "claude" | "theme";
+	/**
+	 * "claude" (default) renders tool rows with Claude Code's chrome: a status
+	 * bullet that goes gray → green, a bold tool name in the default foreground,
+	 * and OSC 8 hyperlinked file paths. "theme" keeps the accent-tinted rows.
+	 */
+	toolChrome?: "claude" | "theme";
 	/**
 	 * When true (default), derive borders, dim text, branch rules, and diff
 	 * accents from the active pi theme via `theme.getFgAnsi`/`getBgAnsi`.
@@ -941,6 +975,7 @@ class DottedParagraph {
 				spacing: settings.messageSpacing,
 				normalizeChecks: looksLikeTaskStatus,
 				visibleWidth,
+				dedentWorkedLine: true,
 			});
 		this.cachedWidth = width;
 		this.cachedChromeKey = chromeKey;
@@ -1324,11 +1359,32 @@ function isBlinkOn(): boolean {
 	return Math.floor(Date.now() / 500) % 2 === 0;
 }
 
+/**
+ * Claude Code's header is `⏺ ` + bold tool name + `(` + argument + `)`, all in the
+ * default foreground — the argument is emphasized by an OSC 8 hyperlink and the
+ * name by bold, never by hue. Callers pass the argument already linked.
+ */
 function toolHeader(tool: string, summary: string, theme: Theme, prefix = ""): string {
 	applyThemePaletteIfNeeded(theme);
-	const label = theme.fg("toolTitle", theme.bold(tool));
-	if (!summary) return `${prefix}${label}`;
-	return `${prefix}${label}${theme.fg("muted", "(")}${WRAP_MARK}${theme.fg("accent", summary)}${theme.fg("muted", ")")}`;
+	if (!claudeChromeEnabled()) {
+		const themed = theme.fg("toolTitle", theme.bold(tool));
+		if (!summary) return `${prefix}${themed}`;
+		return `${prefix}${themed}${theme.fg("muted", "(")}${WRAP_MARK}${theme.fg("accent", summary)}${theme.fg("muted", ")")}`;
+	}
+	const label = `${FG_DEFAULT}${D_BOLD_ON}${tool}${D_BOLD_OFF}`;
+	if (!summary) return `${prefix}${label}${RESET}`;
+	return `${prefix}${label}(${WRAP_MARK}${summary}${FG_DEFAULT})${RESET}`;
+}
+
+/** Claude Code bolds the counts and paths inside result rows. */
+function ccEmphasis(): SummaryEmphasis {
+	if (!claudeChromeEnabled()) return {};
+	return { emphasize: (text: string) => `${D_BOLD_ON}${text}${D_BOLD_OFF}` };
+}
+
+/** Result sentences read in the default foreground under Claude chrome, not muted. */
+function resultSentence(theme: Theme, text: string): string {
+	return claudeChromeEnabled() ? `${FG_DEFAULT}${text}${RESET}` : theme.fg("muted", text);
 }
 
 function setToolStatus(ctx: any, status: "pending" | "success" | "error"): void {
@@ -1392,9 +1448,15 @@ function getWriteWasNewFile(ctx: any, cwd: string, filePath: string, reveal = sh
 
 function toolStatusDot(ctx: any, theme: Theme): string {
 	const status = ctx.state?._toolStatus as "pending" | "success" | "error" | undefined;
-	if (status === "error") return `${theme.fg("error", CLAUDE_TOOL_GLYPH)} `;
-	if (status === "success") return `${theme.fg("accent", CLAUDE_TOOL_GLYPH)} `;
-	return `${blinkDot(ctx, theme)} `;
+	if (!claudeChromeEnabled()) {
+		if (status === "error") return `${theme.fg("error", CLAUDE_TOOL_GLYPH)} `;
+		if (status === "success") return `${theme.fg("accent", CLAUDE_TOOL_GLYPH)} `;
+		return `${blinkDot(ctx, theme)} `;
+	}
+	// Claude Code: gray while running, green on success, red on failure.
+	if (status === "error") return `${CC_DOT_ERROR}${CLAUDE_TOOL_GLYPH}${RESET} `;
+	if (status === "success") return `${CC_DOT_SUCCESS}${CLAUDE_TOOL_GLYPH}${RESET} `;
+	return `${CC_DOT_PENDING}${CLAUDE_TOOL_GLYPH}${RESET} `;
 }
 
 // ---------------------------------------------------------------------------
@@ -1406,7 +1468,8 @@ function branchIndent(text: string, _continued = false): string {
 }
 
 function branchLead(text: string, _continued = false): string {
-	return `${TOOL_RULE}${CLAUDE_RESULT_PREFIX}${TRANSPARENT_RESET}${WRAP_MARK}${text}`;
+	const gutter = claudeChromeEnabled() ? CC_GUTTER_FG : TOOL_RULE;
+	return `${gutter}${CLAUDE_RESULT_PREFIX}${TRANSPARENT_RESET}${WRAP_MARK}${text}`;
 }
 
 function withBranch(content: string, _theme: Theme, _isError = false, continued = false): string {
@@ -2108,6 +2171,15 @@ function themeAdaptiveEnabled(): boolean {
  */
 function claudeDiffPaletteEnabled(): boolean {
 	return readSettings().diffPalette !== "theme";
+}
+
+/**
+ * When on (the default), tool rows use Claude Code's chrome: status-colored bullet
+ * (gray → green), bold tool name in the default foreground, and OSC 8 hyperlinked
+ * paths. Set `toolChrome: "theme"` to keep the themed/accent-tinted rows.
+ */
+function claudeChromeEnabled(): boolean {
+	return readSettings().toolChrome !== "theme";
 }
 
 // Claude Code highlights diff content with a Monokai palette (fg 248,248,242,
@@ -3365,13 +3437,13 @@ function renderEditPreviewBody(
 		renderSplit(diff, language, ctx.expanded ? MAX_PREVIEW_LINES : 32, dc, branchWidth)
 			.then((rendered) => {
 				if (ctx.state._pk !== key) return;
-				ctx.state._ptBody = `${theme.fg("muted", describeEdit(diff.added, diff.removed))}\n${rendered}`;
+				ctx.state._ptBody = `${resultSentence(theme, describeEdit(diff.added, diff.removed, ccEmphasis()))}\n${rendered}`;
 				ctx.state._ptDisplay = indentBranchBlock(withBranch(ctx.state._ptBody, theme, false, true));
 				ctx.invalidate();
 			})
 			.catch(() => {
 				if (ctx.state._pk !== key) return;
-				ctx.state._ptBody = `${theme.fg("muted", describeEdit(diff.added, diff.removed))}`;
+				ctx.state._ptBody = resultSentence(theme, describeEdit(diff.added, diff.removed, ccEmphasis()));
 				ctx.state._ptDisplay = indentBranchBlock(withBranch(ctx.state._ptBody, theme, false, true));
 				ctx.invalidate();
 			});
@@ -4938,6 +5010,11 @@ export default function (pi: ExtensionAPI) {
 
 	const cwd = process.cwd();
 	const sp = (path: string) => shortPath(cwd, path);
+	/** Short display path, clickable via OSC 8 — how Claude Code surfaces the file it touched. */
+	const spl = (path: string) => {
+		if (!path || !claudeChromeEnabled()) return sp(path);
+		return linkedPath(cwd, sp(path), resolve(cwd, path));
+	};
 
 	const readTool = createReadTool(cwd);
 	pi.registerTool({
@@ -4951,7 +5028,7 @@ export default function (pi: ExtensionAPI) {
 		renderCall(args, theme, ctx) {
 			syncToolCallStatus(ctx);
 			const summary = stableCallSummary(ctx, "_callSummary", () => {
-				let value = sp(args.path ?? "");
+				let value = spl(args.path ?? "");
 				if (args.offset || args.limit) {
 					const parts: string[] = [];
 					if (args.offset) parts.push(`offset=${args.offset}`);
@@ -5212,7 +5289,7 @@ export default function (pi: ExtensionAPI) {
 			const revealSummary = shouldRevealCallArgs(ctx) || (!!fp && hasOwnArg(args, "content"));
 			syncToolCallStatus(ctx);
 			// Claude Code labels both new and existing files "Write" — no "Create".
-			const summary = stableCallSummary(ctx, "_callSummary", () => sp(fp), revealSummary);
+			const summary = stableCallSummary(ctx, "_callSummary", () => spl(fp), revealSummary);
 			const hdr = toolHeader("Write", summary, theme, toolStatusDot(ctx, theme));
 			return makeText(ctx.lastComponent, hdr);
 		},
@@ -5238,7 +5315,7 @@ export default function (pi: ExtensionAPI) {
 				const hunks = d.diff?.lines?.filter((l: any) => l.type === "sep").length + (d.diff?.lines?.length ? 1 : 0);
 				const diffWidth = branchDiffWidth();
 				const mode = shouldUseSplit(d.diff, diffWidth, previewLines) ? "split" : "unified";
-				const richSummary = theme.fg("muted", describeWrite(writtenLineCount(ctx.args?.content ?? ""), sp(ctx.args?.path ?? (ctx.args as any)?.file_path ?? "")));
+				const richSummary = resultSentence(theme, describeWrite(writtenLineCount(ctx.args?.content ?? ""), spl(ctx.args?.path ?? (ctx.args as any)?.file_path ?? ""), ccEmphasis()));
 				const key = `wd:${diffWidth}:${d.summary}:${d.diff?.lines?.length ?? 0}:${d.language ?? ""}:${ctx.expanded ? 1 : 0}`;
 				if (ctx.state._wdk !== key) {
 					ctx.state._wdk = key;
@@ -5264,7 +5341,7 @@ export default function (pi: ExtensionAPI) {
 				const lineTotal = writtenLineCount(content);
 				const contentHash = hashText(content);
 				const syntheticDiff = getCachedParsedDiff(ctx, `nf-diff:${d.filePath}:${contentHash}`, "", content);
-				const richSummary = theme.fg("muted", describeWrite(lineTotal, sp(d.filePath ?? "")));
+				const richSummary = resultSentence(theme, describeWrite(lineTotal, spl(d.filePath ?? ""), ccEmphasis()));
 				const previewLines = ctx.expanded ? MAX_RENDER_LINES : diffCollapsedLimit();
 				const diffWidth = branchDiffWidth();
 				const pk = `nf:${d.filePath}:${contentHash}:${diffWidth}:${ctx.expanded ? 1 : 0}`;
@@ -5338,7 +5415,7 @@ export default function (pi: ExtensionAPI) {
 			const fp = args?.path ?? (args as any)?.file_path ?? "";
 			const operations = getEditOperations(args);
 			const revealSummary = shouldRevealCallArgs(ctx) || (!!fp && hasOwnArg(args, "edits"));
-			const summary = stableCallSummary(ctx, "_callSummary", () => shouldRevealCallArgs(ctx) && operations.length > 1 ? `${sp(fp)} ${theme.fg("muted", `(${operations.length} edits)`)}` : sp(fp), revealSummary);
+			const summary = stableCallSummary(ctx, "_callSummary", () => shouldRevealCallArgs(ctx) && operations.length > 1 ? `${spl(fp)} ${theme.fg("muted", `(${operations.length} edits)`)}` : spl(fp), revealSummary);
 			syncToolCallStatus(ctx);
 			const hdr = toolHeader("Update", summary, theme, toolStatusDot(ctx, theme));
 			if (!(ctx.argsComplete && operations.length > 0)) return makeText(ctx.lastComponent, hdr);
