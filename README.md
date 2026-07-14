@@ -2,6 +2,10 @@
 
 Claude Code inspired tool rendering for Pi — Shiki-powered diffs, status dots, branch connectors, file icons, and configurable output modes.
 
+## Requirements
+
+pi **0.74.0 or newer**. pi renamed its npm scope from `@mariozechner/*` to `@earendil-works/*` in 0.74.0, and this extension imports the new scope. If you are on an older pi, run `pi update` first.
+
 ## Features
 
 - **Compact Claude Code-like tool rendering** for `read`, `bash`, `grep`, `find`, `ls`, `edit`, and `write`, including `⏺ Tool(args)` headers and `⎿` result rows
