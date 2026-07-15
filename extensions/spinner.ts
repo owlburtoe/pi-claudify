@@ -36,7 +36,7 @@ const ANSI_ESCAPE_SEQUENCE_RE = /\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x07]*
 const CONTROL_CHARS_RE = /[\u0000-\u001F\u007F-\u009F]/g;
 // Cross-extension bust signal: /cc-spinner in index.ts bumps this counter
 // and we drop the cache when it changes.
-const SPINNER_BUST_KEY = Symbol.for("pi-claude-style-tools:spinner-settings-bust");
+const SPINNER_BUST_KEY = Symbol.for("pi-claudify:spinner-settings-bust");
 let _spinnerLastBust = 0;
 
 function sanitizeSpinnerVerb(value: unknown): string | null {
@@ -188,10 +188,10 @@ function getDefaultSpinnerCharacters(): string[] {
 const SPINNER_CHARS = getDefaultSpinnerCharacters();
 const OB_FRAMES = [...SPINNER_CHARS, ...[...SPINNER_CHARS].reverse()];
 const LOADER_INTERVAL_MS = 250;
-const LOADER_LAST_TEXT = Symbol.for("pi-claude-style-tools:loader-last-text");
-const LOADER_ACTIVE = Symbol.for("pi-claude-style-tools:loader-active");
-const LOADER_GENERATION = Symbol.for("pi-claude-style-tools:loader-generation");
-const ACTIVE_UI_SYMBOL = Symbol.for("pi-claude-style-tools:active-ui");
+const LOADER_LAST_TEXT = Symbol.for("pi-claudify:loader-last-text");
+const LOADER_ACTIVE = Symbol.for("pi-claudify:loader-active");
+const LOADER_GENERATION = Symbol.for("pi-claudify:loader-generation");
+const ACTIVE_UI_SYMBOL = Symbol.for("pi-claudify:active-ui");
 
 function getLoaderIntervalMs(_loader: any): number {
 	return LOADER_INTERVAL_MS;

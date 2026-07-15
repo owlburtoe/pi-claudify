@@ -97,7 +97,7 @@ function sleep(ms: number): Promise<void> {
 }
 
 function buildWorkspace(): string {
-	const root = mkdtempSync(join(tmpdir(), "pi-cc-tools-bench-"));
+	const root = mkdtempSync(join(tmpdir(), "pi-claudify-bench-"));
 	mkdirSync(join(root, "src"), { recursive: true });
 	mkdirSync(join(root, "docs"), { recursive: true });
 	mkdirSync(join(root, "tests"), { recursive: true });

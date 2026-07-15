@@ -74,12 +74,12 @@ const TRANSPARENT_RESET = `${RESET}${TRANSPARENT_BG}`;
 let BORDER_COLOR = "\x1b[38;5;238m";
 const ANSI_RE = /\x1b\[[0-9;]*m/g;
 const ANSI_PRESENT_RE = /\x1b\[[0-9;]*m/;
-const PATCH_FLAG = Symbol.for("pi-claude-style-tools:patched-container-render");
-const TOOL_RENDER_CACHE = Symbol.for("pi-claude-style-tools:tool-render-cache");
-const TOOL_CACHE_PATCH_FLAG = Symbol.for("pi-claude-style-tools:patched-tool-cache-invalidation");
-const TOOL_IMAGE_EXPAND_PATCH_FLAG = Symbol.for("pi-claude-style-tools:patched-read-image-expansion");
-const CUSTOM_MESSAGE_PATCH_FLAG = Symbol.for("pi-claude-style-tools:patched-custom-message-render");
-const USER_MESSAGE_PATCH_FLAG = Symbol.for("pi-claude-style-tools:patched-user-message-render");
+const PATCH_FLAG = Symbol.for("pi-claudify:patched-container-render");
+const TOOL_RENDER_CACHE = Symbol.for("pi-claudify:tool-render-cache");
+const TOOL_CACHE_PATCH_FLAG = Symbol.for("pi-claudify:patched-tool-cache-invalidation");
+const TOOL_IMAGE_EXPAND_PATCH_FLAG = Symbol.for("pi-claudify:patched-read-image-expansion");
+const CUSTOM_MESSAGE_PATCH_FLAG = Symbol.for("pi-claudify:patched-custom-message-render");
+const USER_MESSAGE_PATCH_FLAG = Symbol.for("pi-claudify:patched-user-message-render");
 const WRAP_MARK = "\uE000";
 const KITTY_IMAGE_PREFIX = "\x1b_G";
 const ITERM2_IMAGE_PREFIX = "\x1b]1337;File=";
@@ -232,7 +232,7 @@ function readSettings(): SettingsFile {
 // globalThis and invalidates its settings cache when it changes. Lets
 // /cc-spinner edits take effect on the next 250ms spinner tick instead of
 // waiting for the file-stat TTL.
-const SPINNER_BUST_KEY = Symbol.for("pi-claude-style-tools:spinner-settings-bust");
+const SPINNER_BUST_KEY = Symbol.for("pi-claudify:spinner-settings-bust");
 function bustSpinnerSettingsCache(): void {
 	const current = ((globalThis as any)[SPINNER_BUST_KEY] as number | undefined) ?? 0;
 	(globalThis as any)[SPINNER_BUST_KEY] = current + 1;
@@ -856,9 +856,9 @@ function unrefTimer(timer: ReturnType<typeof setTimeout> | null | undefined): vo
 	(timer as any)?.unref?.();
 }
 
-const ASSISTANT_PATCH_FLAG = Symbol.for("pi-claude-style-tools:patched-assistant-message");
-const TOOL_EXECUTION_PATCH_FLAG = Symbol.for("pi-claude-style-tools:patched-tool-execution");
-const TOOL_INDENT_PATCH_FLAG = Symbol.for("pi-claude-style-tools:patched-tool-row-indent");
+const ASSISTANT_PATCH_FLAG = Symbol.for("pi-claudify:patched-assistant-message");
+const TOOL_EXECUTION_PATCH_FLAG = Symbol.for("pi-claudify:patched-tool-execution");
+const TOOL_INDENT_PATCH_FLAG = Symbol.for("pi-claudify:patched-tool-row-indent");
 const OSC133_ZONE_START = "\x1b]133;A\x07";
 const OSC133_ZONE_END = "\x1b]133;B\x07";
 const OSC133_ZONE_FINAL = "\x1b]133;C\x07";
