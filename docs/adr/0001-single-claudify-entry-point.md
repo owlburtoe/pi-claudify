@@ -1,0 +1,3 @@
+# /claudify screen replaces the /cc-* command family
+
+The four grab-bag commands (`/cc-tools`, `/cc-theme`, `/cc-spinner`, `/cc-message`) are removed outright in 2.0.0 and replaced by a single `/claudify` command that opens an interactive Hub-and-Section overlay (built on `ctx.ui.custom` with `overlay: true`). No text-form subcommands survive, so scriptable one-liners like `/cc-spinner verbs add X` are gone and non-TUI modes (rpc, print) only get a "requires the interactive TUI" notice; we accepted that loss to keep exactly one entry point instead of maintaining a parallel argument grammar alongside the screen. Settings files remain the non-interactive path.
