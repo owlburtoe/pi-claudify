@@ -1,31 +1,32 @@
-# pi-claude-style-tools
+# pi-claudify
 
-Claude Code inspired tool rendering for Pi — Shiki-powered diffs, status dots, branch connectors, file icons, and configurable output modes.
+Claude Code style rendering for [pi](https://github.com/earendil-works/pi), published as `@owlburtoe/pi-claudify` (formerly `@owlburtoe/pi-cc-tools`). Tool rows, diffs, and transcript grammar that match what Claude Code actually prints, captured from live sessions instead of guessed.
+
+## Why this exists
+
+I trust Claude Code, and most of that trust comes from its harness and TUI. The transcript stays calm. Every tool call gets a short plain row that tells me what the agent did and whether it worked, and nothing shouts for attention. I can read a whole turn at a glance because the terminal is doing the explaining for me.
+
+When I moved to pi, the agent underneath was great but the transcript was not giving me that same feeling. Tool output was boxy and loud, results took up more room than they earned, and I kept expanding things just to confirm the agent was fine. So this package teaches pi to render its transcript the way Claude Code does, because that rendering is what made me comfortable letting an agent work.
+
+This project began as a fork of [pi-cc-tools](https://github.com/FammasMaz/pi-cc-tools) by Moeeze Hassan ([FammasMaz](https://github.com/FammasMaz)), and his tool renderers are still the foundation. Since then I have rebuilt a lot of it and added the conformance layer, the aggregation and message chrome modules, and the test suite, so it now lives here as its own project.
+
+One rule drives the work: capture, do not guess. When I wanted to know how Claude Code renders MCP calls, I ran Claude Code against a throwaway MCP server and recorded the screen through the whole turn. It turned out Claude gives MCP calls no tool row at all, which no amount of guessing would have produced. Each rendering detail gets captured live and written down in [docs/plans/](docs/plans/) before any code changes, and the tests assert the capture. At the end of the day, a faithful copy of the real thing beats a nice invention.
+
+## What it does
+
+- Tool rows in Claude Code's shape: `⏺ Tool(args)` headers, `⎿` result rows, and a status bullet that goes from gray to green when the tool succeeds (red when it fails). Tool names are bold, and file paths are OSC 8 hyperlinks you can click to open the file.
+- Read-only tools (`read`, `grep`, `find`, `ls`, `bash`) aggregate under one gerund header while they run, such as `⏺ Searching for 1 pattern, reading 2 files…`, then collapse to a dim past-tense summary like `Read 1 file, ran 1 shell command` once the turn settles. Mutating tools (`write`, `edit`, `apply_patch`) keep their own rows.
+- MCP calls render the way Claude Code renders them, which is barely at all. No header, no result row, no arguments. An MCP call adds one clause naming the server to the aggregated group: `⏺ Calling plane, forgejo 2 times…` while running, `Called plane, forgejo 2 times` when done. This works for every MCP server and both of pi's exposure modes, with nothing server-specific hardcoded. Set `readOnlyToolGrouping: false` if you want per-call rows instead.
+- Diffs use Claude Code's exact red and green palette, always unified, with a line-number gutter and no box chrome. Removed lines are left without syntax highlighting because Claude Code leaves them plain too.
+- Results read as sentences, such as `Wrote 3 lines to <path>` and `Added 2 lines, removed 2 lines`, instead of stat bars.
+- Common read-only shell one-liners render semantically, so `nl -ba file | sed -n '1,200p'` shows up as `Read file (lines 1-200)`.
+- Transcript grammar matches Claude Code v2.1.207: `❯` user rows with no box, `⏺` bullets at column 0, `(ctrl+o to expand)` hints, and `✻ Cooked for 8s` worked lines. See [docs/plans/2026-07-13-current-cc-grammar.md](docs/plans/2026-07-13-current-cc-grammar.md).
+- OpenAI-style tools get the same treatment: `apply_patch` renders parsed diff previews in the call phase, and `webfetch`, `web_search`, `fetch_content`, task tools, and context tools get Claude-style rows.
+- The palette follows your active pi theme by default, with borders, connectors, dim text, spinner accent, and diff backgrounds re-derived on every theme change. Thinking labels, message spacing, spinner verbs, and worked verbs are all configurable.
 
 ## Requirements
 
-pi **0.74.0 or newer**. pi renamed its npm scope from `@mariozechner/*` to `@earendil-works/*` in 0.74.0, and this extension imports the new scope. If you are on an older pi, run `pi update` first.
-
-## Features
-
-- **Compact Claude Code-like tool rendering** for `read`, `bash`, `grep`, `find`, `ls`, `edit`, and `write`, including `⏺ Tool(args)` headers and `⎿` result rows
-- **Transcript grammar matched to Claude Code v2.1.207**, captured live rather than reconstructed — `❯` user rows with no box, `⏺` bullets at column 0, `␣␣⎿␣␣` result gutters, `(ctrl+o to expand)` hints, and `✻ Cooked for 8s` worked lines. See [docs/plans/2026-07-13-current-cc-grammar.md](docs/plans/2026-07-13-current-cc-grammar.md)
-- **Semantic bash display** that renders common read-only shell one-liners like `nl -ba file | sed -n '1,200p'` as Claude Code-style `Read file (lines 1-200)` rows
-- **Aggregated read-only tools** under a gerund header (`⏺ Searching for 1 pattern, reading 2 files…`) with one `⎿` per target, collapsing to a dim `Read 1 file, ran 1 shell command` once the turn settles — the model current Claude Code uses
-- **Claude-style OpenAI tool rendering** for `apply_patch` plus common Pi/OpenAI-style tools like `webfetch`, `web_search`, `fetch_content`, task tools, and context tools
-- **`apply_patch` diff previews** that render parsed file patches in the call phase, similar to `edit`/`write`
-- **Claude Code diff bodies** — unified hunks with a ` N ` gutter and sign column, no box chrome, Claude's exact red/green palette, brighter backgrounds on changed tokens, and unhighlighted removals; writes render as a plain numbered listing
-- **Sentence result rows** (`Wrote 3 lines to <path>`, `Added 2 lines, removed 2 lines`) instead of stat bars
-- **Claude Code tool chrome** — the `⏺` bullet goes gray → green as a tool succeeds, tool names are bold, and file paths are OSC 8 hyperlinks you can click to open the file
-- **Progressive collapsed diff hints** that shorten on narrow terminals
-- **Thinking labels** during streaming and final messages, with context sanitization
-- **Claude-style transcript grammar controls** for assistant/thinking prefixes, message spacing, and hidden thinking labels
-- **Claude Code MCP rendering** — Claude Code gives MCP calls no tool row of their own: no header, no `⎿` result row, no arguments, no result preview, and no difference between read-only, mutating, and failing tools. An MCP call adds one clause, naming the **server**, to the aggregated inspection group, which collapses when the turn settles — `⏺ Calling plane, forgejo, obsidian 3 times…` while running, `Called plane, forgejo, obsidian 3 times` once done, and `Read 1 file, called probe, ran 1 shell command` when mixed with built-ins. This package now does the same, replacing the old `⏺ MCP(plane:plane_list_work_items)` / `1 line returned` rows. Grammar captured live from Claude Code, not reconstructed: [docs/plans/2026-07-13-mcp-grammar.md](docs/plans/2026-07-13-mcp-grammar.md). Works for every MCP server and both of pi's exposure modes — the `mcp` proxy tool and directly-registered tools (`plane_get_me`, or a bare `get_me` when the server prefix is off) — with nothing server-specific hardcoded. Set `readOnlyToolGrouping: false` to opt out and get per-call rows honoring `mcpOutputMode` instead
-- **Configurable output modes** for read, search, bash, and MCP results
-- **Transparent tool backgrounds** in `transparent` or `border` mode
-- **Theme-adaptive palette** — borders, branch connectors, dim text, spinner accent, and diff backgrounds automatically follow the active pi theme (set `themeAdaptive: false` to keep the fixed Claude-style palette)
-- **Transparent edit/write diffs** with universal red/green diff colors
-- **Global border patch** for all tool rows, including unknown/custom tools
+pi 0.74.0 or newer. pi renamed its npm scope from `@mariozechner/*` to `@earendil-works/*` in 0.74.0, and this package imports the new scope. If you are on an older pi, run `pi update` first.
 
 ## Configuration
 
@@ -64,7 +65,7 @@ Set in `.pi/settings.json` or `~/.pi/settings.json`:
 
 ### Theme integration
 
-When `themeAdaptive` is `true` (default), the following colors are derived from the active pi theme on every render and re-derived whenever the theme changes:
+When `themeAdaptive` is `true` (the default), these colors are derived from the active pi theme on every render and re-derived whenever the theme changes:
 
 | Element | Derived from |
 |---------|--------------|
@@ -77,40 +78,28 @@ When `themeAdaptive` is `true` (default), the following colors are derived from 
 | Spinner glyph + verb text (`✻ Working…`) | `borderAccent` (fallback: `accent`) |
 | Spinner status text | `muted` |
 
-User-supplied `diffTheme` presets and `diffColors` overrides always win over theme-derived defaults. File-type icons (e.g. `ts`, `py`, `rs`) keep their language-identity colors and are not theme-derived.
+User-supplied `diffTheme` presets and `diffColors` overrides always win over theme-derived defaults. File-type icons (`ts`, `py`, `rs`, and so on) keep their language-identity colors.
 
-Set `themeAdaptive: false` to keep the original fixed Claude-style palette regardless of the active pi theme.
+Set `themeAdaptive: false` to keep the fixed Claude-style palette no matter which pi theme is active.
 
 ### Tool row chrome
 
-`toolChrome` defaults to `"claude"`, which mirrors how Claude Code signals what a tool is
-doing and whether it worked:
+`toolChrome` defaults to `"claude"`, which mirrors how Claude Code signals what a tool is doing and whether it worked:
 
-- **The bullet carries the status.** `⏺` is gray while the tool runs and turns green once
-  it actually succeeded (red on failure). It's the only color in the row.
-- **File paths are clickable, not colored.** Paths are wrapped in OSC 8 hyperlinks
-  (`file://…`), so a supporting terminal (iTerm2, WezTerm, Ghostty, Kitty, VS Code) opens
-  the file on click. Claude Code tints nothing here — emphasis comes from **bold**.
-- **The tool name is bold** in the default foreground; parens are plain.
-- **Result rows bold the load-bearing facts** — the line counts and the path — against
-  plain text, with the `⎿` gutter in gray.
+- The bullet carries the status. `⏺` is gray while the tool runs and turns green once it actually succeeded, or red on failure. It is the only color in the row.
+- File paths are clickable, not colored. Paths are wrapped in OSC 8 hyperlinks (`file://…`), so a supporting terminal (iTerm2, WezTerm, Ghostty, Kitty, VS Code) opens the file on click.
+- The tool name is bold in the default foreground, and the parens are plain.
+- Result rows bold the load-bearing facts, meaning the line counts and the path, with the `⎿` gutter in gray.
 
-Terminals without OSC 8 support ignore the escape and show the plain path. The links are
-zero-width, so they never affect wrapping or alignment.
+Terminals without OSC 8 support ignore the escape and show the plain path. The links are zero-width, so they never affect wrapping or alignment.
 
 Set `toolChrome: "theme"` to go back to accent-tinted arguments and a themed tool title.
 
 ### Diff palette
 
-`diffPalette` defaults to `"claude"`: diffs render exactly as Claude Code does — always
-unified, no box chrome, and a fixed palette taken from Claude Code's own output
-(removed `#3D0100` on `#DC5A5A`, added `#022800` on `#50C850`, with brighter
-backgrounds on the changed token). Removed lines are intentionally not
-syntax-highlighted, matching Claude Code. Pair it with `diffTheme: "monokai"` for
-Claude's syntax colors.
+`diffPalette` defaults to `"claude"`: diffs render exactly as Claude Code does. Always unified, no box chrome, and a fixed palette taken from Claude Code's own output (removed `#3D0100` on `#DC5A5A`, added `#022800` on `#50C850`, with brighter backgrounds on the changed token). Pair it with `diffTheme: "monokai"` for Claude's syntax colors.
 
-Set `diffPalette: "theme"` to restore the theme-derived tints and the adaptive
-split/unified layout.
+Set `diffPalette: "theme"` to restore the theme-derived tints and the adaptive split/unified layout.
 
 #### Toggle at runtime with `/cc-theme`
 
@@ -122,11 +111,11 @@ split/unified layout.
 /cc-theme toggle    # flip the current value
 ```
 
-The selection is persisted to `~/.pi/settings.json` and applied to the next rendered tool row. No restart required.
+The selection is persisted to `~/.pi/settings.json` and applied to the next rendered tool row. No restart needed.
 
 #### Repaint the spinner with `/cc-spinner`
 
-The spinner glyph and verb text (e.g. `✻ Cooking…`) share `borderAccent` by default so the working indicator reads as one unit. The status suffix (e.g. `(thinking · ↓ 10 tokens · 2s)`) follows `muted`. Use `/cc-spinner` to bind either text element to any other theme color key:
+The spinner glyph and verb text (`✻ Cooking…`) share `borderAccent` by default so the working indicator reads as one unit. The status suffix (`(thinking · ↓ 10 tokens · 2s)`) follows `muted`. Use `/cc-spinner` to bind either element to any other theme color key:
 
 ```text
 /cc-spinner preview                  # list every common theme key with a colored sample
@@ -142,7 +131,7 @@ The spinner glyph and verb text (e.g. `✻ Cooking…`) share `borderAccent` by 
 /cc-spinner verbs reset              # remove user custom verbs and mode
 ```
 
-Color selections are persisted as `spinnerColor` / `spinnerStatusColor` in `~/.pi/settings.json` and applied on the next spinner tick. Older `spinnerVerbColor` settings still work as a backward-compatible alias. Custom verbs are persisted as `spinnerVerbs` and `spinnerVerbMode`; they are picked at the next turn start. `/cc-spinner verbs ...` writes user settings in `~/.pi/settings.json`; project-level custom verbs can be set manually in `.pi/settings.json`. When both project and user spinner settings exist, the spinner reader applies project settings first and user settings second.
+Color selections are persisted as `spinnerColor` / `spinnerStatusColor` in `~/.pi/settings.json` and applied on the next spinner tick. Older `spinnerVerbColor` settings still work as an alias. Custom verbs are persisted as `spinnerVerbs` and `spinnerVerbMode` and picked up at the next turn start. When both project and user spinner settings exist, project settings apply first and user settings second.
 
 #### Tune assistant/thinking transcript chrome with `/cc-message`
 
@@ -158,12 +147,11 @@ Color selections are persisted as `spinnerColor` / `spinnerStatusColor` in `~/.p
 /cc-message reset                        # restore message chrome defaults
 ```
 
-`messageStyle: "claude"` trims leading/trailing blank render lines, collapses paragraph gaps, and aligns wrapped assistant/thinking lines under the message body, matching Claude Code's sparse transcript grammar. `messageStyle: "classic"` keeps the previous package behavior.
+`messageStyle: "claude"` trims leading and trailing blank render lines, collapses paragraph gaps, and aligns wrapped assistant and thinking lines under the message body, matching Claude Code's sparse transcript grammar. `messageStyle: "classic"` keeps the previous package behavior.
 
 #### Custom worked verbs
 
-Each finished turn is named with a past-tense verb — `✻ Cooked for 8s`, `✻ Sautéed for 11s`.
-One is picked per turn and stays stable across repaints. You can supply your own:
+Each finished turn is named with a past-tense verb, like `✻ Cooked for 8s` or `✻ Sautéed for 11s`. One is picked per turn and stays stable across repaints. You can supply your own:
 
 ```text
 /cc-message verbs list                   # show custom verbs, mode, and the active pool
@@ -184,16 +172,13 @@ Or set them directly in `settings.json`:
 }
 ```
 
-`append` (the default) merges your verbs into the built-in pool; `replace` draws only from
-yours. An empty list always falls back to the built-ins, so a bad config can't leave the
-worked line verbless. This is a deliberate departure from Claude Code, which has no such
-setting.
+`append` (the default) merges your verbs into the built-in pool, and `replace` draws only from yours. An empty list always falls back to the built-ins, so a bad config cannot leave the worked line verbless. This one is a deliberate departure from Claude Code, which has no such setting.
 
 ### Tool background modes
 
 | Value | Behavior |
 |-------|----------|
-| `default` | Standard Pi tool backgrounds |
+| `default` | Standard pi tool backgrounds |
 | `transparent` | Transparent tool backgrounds |
 | `border` | Transparent backgrounds with top/bottom border lines (alias for `outlines`) |
 | `outlines` | Transparent backgrounds with top/bottom border lines |
@@ -211,17 +196,17 @@ setting.
 
 | Value | Behavior |
 |-------|----------|
-| `opencode` | Compact status while collapsed, with `Ctrl+O` hint for output preview on raw shell commands. Semantic read-only bash rows omit the repeated hint to stay closer to Claude Code. |
-| `summary` | Status only; no output preview or expansion hint |
+| `opencode` | Compact status while collapsed, with a `Ctrl+O` hint for output preview on raw shell commands. Semantic read-only bash rows omit the repeated hint to stay closer to Claude Code. |
+| `summary` | Status only, with no output preview or expansion hint |
 | `preview` | Show a small output preview even while collapsed |
 
 ### Boolean settings
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `bashStackConsecutive` | `true` | Remove the extra synthetic spacer between adjacent bash tool rows so command bursts render as a tight stack |
+| `bashStackConsecutive` | `true` | Remove the extra spacer between adjacent bash tool rows so command bursts render as a tight stack |
 | `bashSemanticDisplay` | `true` | Render common read-only shell file-inspection commands as semantic `Read` rows instead of raw `Bash` rows |
-| `readOnlyToolGrouping` | `true` | Aggregate adjacent read-only tools (`read`/`grep`/`find`/`ls`/`bash`) under one gerund header, collapsing to a dim past-tense summary once they settle; mutating `write`/`edit`/`apply_patch` rows stay independent |
+| `readOnlyToolGrouping` | `true` | Aggregate adjacent read-only tools (`read`/`grep`/`find`/`ls`/`bash`) under one gerund header that collapses to a dim past-tense summary once they settle; mutating `write`/`edit`/`apply_patch` rows stay independent |
 
 ### Numeric settings
 
@@ -235,17 +220,18 @@ setting.
 
 ## Notes
 
-This package targets recent Pi versions where tool renderers use:
+This package targets recent pi versions where tool renderers use:
 
 - `renderCall(args, theme, context)`
 - `renderResult(result, { expanded, isPartial }, theme, context)`
 
-Unknown/custom tools do not have a public global renderer hook in Pi, so this package patches container rendering to add top/bottom borders for all tool executions in border mode.
+Unknown and custom tools do not have a public global renderer hook in pi, so this package patches container rendering to add top and bottom borders for all tool executions in border mode.
 
 ## Credits
 
-This project builds upon and was inspired by the excellent work of:
+This project would not exist without the people whose work it builds on:
 
-- **[@heyhuynhgiabuu/pi-pretty](https://github.com/buddingnewinsights/pi-pretty)** by [huynhgiabuu](https://github.com/buddingnewinsights) — Pretty terminal output with syntax-highlighted file reads, colored bash output, and tree-view directory listings
-- **[@heyhuynhgiabuu/pi-diff](https://github.com/buddingnewinsights/pi-diff)** by [huynhgiabuu](https://github.com/buddingnewinsights) — Shiki-powered terminal diff renderer with word-level diffs in split and unified views
-- **[pi-tool-display](https://github.com/MasuRii/pi-tool-display)** by [MasuRii](https://github.com/MasuRii) — Compact tool call rendering, diff visualization, and output truncation
+- **Moeeze Hassan ([FammasMaz](https://github.com/FammasMaz))**, who wrote [pi-cc-tools](https://github.com/FammasMaz/pi-cc-tools), the project this one was forked from. The bones of the tool renderers are his.
+- **[@heyhuynhgiabuu/pi-pretty](https://github.com/buddingnewinsights/pi-pretty)** by [huynhgiabuu](https://github.com/buddingnewinsights): pretty terminal output with syntax-highlighted file reads, colored bash output, and tree-view directory listings
+- **[@heyhuynhgiabuu/pi-diff](https://github.com/buddingnewinsights/pi-diff)** by [huynhgiabuu](https://github.com/buddingnewinsights): Shiki-powered terminal diff renderer with word-level diffs in split and unified views
+- **[pi-tool-display](https://github.com/MasuRii/pi-tool-display)** by [MasuRii](https://github.com/MasuRii): compact tool call rendering, diff visualization, and output truncation
